@@ -1,0 +1,8 @@
+timers:
+  - name: short
+    focus: 50
+    break: 10
+
+  - name: long
+    focus: 25
+    break: 5
