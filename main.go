@@ -24,6 +24,7 @@ func main() {
 	RedBold.Println("Press q to quit")
 	GreenBold.Print("Enter your option >> ")
 	fmt.Scan(&choice)
+	ClearConsole()
 
 	if choice == "q" || choice == "Q" {
 		fmt.Println("goodbye👋🏻...")
@@ -40,7 +41,6 @@ func main() {
 		focusDuration := config.Timers[option-1].Focus * 60
 		StartSession("FOCUS", focusDuration)
 
-		// BUG: this got skipped
 		breakDuration := config.Timers[option-1].Break * 60
 		StartSession("BREAK", breakDuration)
 
