@@ -14,11 +14,9 @@ func main() {
 	}
 
 	PrintBanner()
+	PrintAvailableSplits(config)
 
 	var choice string
-	for i, split := range config.Timers {
-		fmt.Printf("%d %v (🤓Focus: %v mins; 😎Break: %v mins)\n", i+1, split.Name, split.Focus, split.Break)
-	}
 
 	RedBold.Println("Press q to quit")
 	GreenBold.Print("Enter your option >> ")
@@ -49,6 +47,7 @@ func main() {
 		os.Exit(1)
 	}
 
+	// TODO: dont let the user spam keys when the timer is running (only allow 'q' to quit)
 	// TODO: notify the user about the completion of the split
 	// TODO: create a new split - open $EDITOR to create custom split
 	// then verify if the config is correct
