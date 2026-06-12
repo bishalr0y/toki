@@ -13,8 +13,7 @@ func main() {
 		log.Fatalf("Error reading config: %v", err)
 	}
 
-	// TODO: create seperate files/functions to clean this mess up
-	BlueBoldUnderline.Println("Welcome to toki⏳")
+	PrintBanner()
 
 	var choice string
 	for i, split := range config.Timers {
@@ -27,7 +26,8 @@ func main() {
 	ClearConsole()
 
 	if choice == "q" || choice == "Q" {
-		fmt.Println("goodbye👋🏻...")
+		PrintBanner()
+		MauveBold.Println("goodbye👋🏻...")
 		os.Exit(0)
 	}
 

@@ -12,11 +12,12 @@ func StartSession(name string, duration int) {
 	writer := uilive.New()
 	writer.Start()
 
+	PrintBanner()
 	for i := range duration {
-		fmt.Fprintf(writer, "%s session\n⏳time remaining -> %s\n", name, FormatTimer(duration-i))
+		MauveBold.Fprintf(writer, "%s session\n⏳time remaining -> %s\n", name, FormatTimer(duration-i))
 		time.Sleep(time.Second)
 	}
-	fmt.Fprintf(writer, "\n%s session completed!\n", name)
+	GreenBold.Fprintf(writer, "\n%s session completed!\n", name)
 	writer.Stop()
 }
 
