@@ -20,6 +20,7 @@ func StartSession(name string, duration int) {
 		time.Sleep(time.Second)
 	}
 	GreenBold.Fprintf(writer, "\n%s session completed!\n", name)
+	Notify(name)
 	writer.Stop()
 }
 

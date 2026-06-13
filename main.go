@@ -48,7 +48,6 @@ func main() {
 	}
 
 	// TODO: dont let the user spam keys when the timer is running (only allow 'q' to quit)
-	// TODO: notify the user about the completion of the split
 	// TODO: create a new split - open $EDITOR to create custom split
 	// then verify if the config is correct
 
