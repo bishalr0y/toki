@@ -34,12 +34,16 @@ func main() {
 		log.Fatalln("invalid choice")
 	}
 
+	selectedSplit := config.Timers[option-1]
+	PeachBold.Printf("selected split: %s; Focus: %d min(s); Break: %d min(s)\n",
+		selectedSplit.Name, selectedSplit.Focus, selectedSplit.Break)
+
 	switch {
 	case option <= len(config.Timers):
-		focusDuration := config.Timers[option-1].Focus * 60
+		focusDuration := selectedSplit.Focus * 60
 		StartSession("FOCUS", focusDuration)
 
-		breakDuration := config.Timers[option-1].Break * 60
+		breakDuration := selectedSplit.Break * 60
 		StartSession("BREAK", breakDuration)
 
 	default:
@@ -52,4 +56,5 @@ func main() {
 	// then verify if the config is correct
 
 	// TODO: after the split cycle is completed, give a option to exit
+	// TODO: save the successfull work splits into badger db
 }
