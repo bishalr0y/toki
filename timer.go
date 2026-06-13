@@ -14,7 +14,6 @@ func StartSession(name string, duration int) {
 	writer := uilive.New()
 	writer.Start()
 
-	PrintBanner()
 	for i := range duration {
 		MauveBold.Fprintf(writer, "%s session\n⏳time remaining -> %s\n", name, FormatTimer(duration-i))
 		time.Sleep(time.Second)
