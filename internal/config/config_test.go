@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -20,11 +21,11 @@ func TestReadDefaultConfig(t *testing.T) {
 		if timer.Name == "" {
 			t.Errorf("timer[%d].Name is empty", i)
 		}
-		if timer.Focus <= 0 {
-			t.Errorf("timer[%d].Focus = %d, want > 0", i, timer.Focus)
+		if timer.FocusMins <= 0 {
+			t.Errorf("timer[%d].FocusMins = %d, want > 0", i, timer.FocusMins)
 		}
-		if timer.Break <= 0 {
-			t.Errorf("timer[%d].Break = %d, want > 0", i, timer.Break)
+		if timer.BreakMins <= 0 {
+			t.Errorf("timer[%d].BreakMins = %d, want > 0", i, timer.BreakMins)
 		}
 	}
 }
@@ -78,10 +79,136 @@ func TestReadConfig_ExistingFile(t *testing.T) {
 	if cfg.Timers[0].Name != "Test Split" {
 		t.Errorf("expected name 'Test Split', got %q", cfg.Timers[0].Name)
 	}
-	if cfg.Timers[0].Focus != 15 {
-		t.Errorf("expected focus 15, got %d", cfg.Timers[0].Focus)
+	if cfg.Timers[0].FocusMins != 15 {
+		t.Errorf("expected focus 15, got %d", cfg.Timers[0].FocusMins)
 	}
-	if cfg.Timers[0].Break != 5 {
-		t.Errorf("expected break 5, got %d", cfg.Timers[0].Break)
+	if cfg.Timers[0].BreakMins != 5 {
+		t.Errorf("expected break 5, got %d", cfg.Timers[0].BreakMins)
+	}
+}
+
+// B4: zero and negative durations used to be accepted silently. `focus: 0`
+// produced an instant "session completed!", and a negative value made the range
+// loop iterate zero times, so the session was skipped without a word.
+// Validation has to happen at load time, not when a split is picked. Otherwise
+// the user only discovers their config is broken after typing a choice.
+func TestReadConfigRejectsAnInvalidFile(t *testing.T) {
+	steps := []struct {
+		name    string
+		content string
+		wantSay string
+	}{
+		{
+			name:    "zero focus",
+			content: "timers:\n  - name: broken\n    focus: 0\n    break: 5\n",
+			wantSay: "focus",
+		},
+		{
+			name:    "negative break",
+			content: "timers:\n  - name: broken\n    focus: 25\n    break: -5\n",
+			wantSay: "break",
+		},
+		{
+			name:    "no timers",
+			content: "timers: []\n",
+			wantSay: "at least one",
+		},
+	}
+
+	for _, s := range steps {
+		t.Run(s.name, func(t *testing.T) {
+			tmpHome := t.TempDir()
+			t.Setenv("HOME", tmpHome)
+
+			configDir := filepath.Join(tmpHome, ".config/toki")
+			if err := os.MkdirAll(configDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(configDir, "config.yaml")
+			if err := os.WriteFile(path, []byte(s.content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			_, err := ReadConfig()
+			if err == nil {
+				t.Fatal("ReadConfig() = nil error, want a validation failure")
+			}
+			if !strings.Contains(err.Error(), s.wantSay) {
+				t.Errorf("error %q does not mention %q", err, s.wantSay)
+			}
+		})
+	}
+}
+
+func TestValidateAcceptsAWellFormedConfig(t *testing.T) {
+	cfg := Config{Timers: []TimerSplit{
+		{Name: "Standard", FocusMins: 25, BreakMins: 5},
+		{Name: "Long Focus", FocusMins: 50, BreakMins: 10},
+	}}
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() = %v, want nil", err)
+	}
+}
+
+func TestValidateRejectsUnusableTimers(t *testing.T) {
+	steps := []struct {
+		name    string
+		cfg     Config
+		wantSay []string
+	}{
+		{
+			name:    "no timers at all",
+			cfg:     Config{},
+			wantSay: []string{"at least one"},
+		},
+		{
+			name:    "empty name",
+			cfg:     Config{Timers: []TimerSplit{{Name: "   ", FocusMins: 25, BreakMins: 5}}},
+			wantSay: []string{"timers[0]", "name"},
+		},
+		{
+			name:    "zero focus",
+			cfg:     Config{Timers: []TimerSplit{{Name: "Standard", FocusMins: 0, BreakMins: 5}}},
+			wantSay: []string{"timers[0]", "Standard", "focus", "0"},
+		},
+		{
+			name:    "negative focus",
+			cfg:     Config{Timers: []TimerSplit{{Name: "Standard", FocusMins: -25, BreakMins: 5}}},
+			wantSay: []string{"Standard", "focus", "-25"},
+		},
+		{
+			name:    "zero break",
+			cfg:     Config{Timers: []TimerSplit{{Name: "Standard", FocusMins: 25, BreakMins: 0}}},
+			wantSay: []string{"Standard", "break", "0"},
+		},
+		{
+			name:    "negative break",
+			cfg:     Config{Timers: []TimerSplit{{Name: "Standard", FocusMins: 25, BreakMins: -5}}},
+			wantSay: []string{"Standard", "break", "-5"},
+		},
+		{
+			name: "offending entry is identified by position",
+			cfg: Config{Timers: []TimerSplit{
+				{Name: "ok", FocusMins: 25, BreakMins: 5},
+				{Name: "also ok", FocusMins: 25, BreakMins: 5},
+				{Name: "broken", FocusMins: 0, BreakMins: 5},
+			}},
+			wantSay: []string{"timers[2]", "broken"},
+		},
+	}
+
+	for _, s := range steps {
+		t.Run(s.name, func(t *testing.T) {
+			err := s.cfg.Validate()
+			if err == nil {
+				t.Fatalf("Validate() = nil, want an error")
+			}
+			for _, want := range s.wantSay {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q does not mention %q", err, want)
+				}
+			}
+		})
 	}
 }
