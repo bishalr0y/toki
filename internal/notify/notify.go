@@ -2,7 +2,6 @@ package notify
 
 import (
 	_ "embed"
-	"fmt"
 
 	"github.com/gen2brain/beeep"
 )
@@ -11,5 +10,5 @@ import (
 var icon []byte
 
 func Notify(session string) error {
-	return beeep.Notify("Toki", fmt.Sprintf("%s session completed", session), icon)
+	return beeep.Notify("Toki", session+" session completed", icon)
 }
