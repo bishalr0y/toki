@@ -116,6 +116,45 @@ func TestHelpWrapsRatherThanRunningOffTheEdge(t *testing.T) {
 	}
 }
 
+// Wrapping on spaces alone would split the separator and leave a lone "·" at
+// the start of a line.
+func TestHelpNeverBreaksAPairApartFromItsSeparator(t *testing.T) {
+	for _, width := range []int{12, 16, 20, 24, 30, 40} {
+		out := Help(width, [2]string{"space", "pause"}, [2]string{"s", "skip"},
+			[2]string{"esc", "back"}, [2]string{"q", "quit"})
+
+		for line := range strings.SplitSeq(out, "\n") {
+			trimmed := strings.TrimSpace(line)
+			if trimmed == "·" || strings.HasPrefix(trimmed, "·") {
+				t.Errorf("width %d: line %q starts with a stray separator", width, line)
+			}
+			// A key and its label belong together, so "esc" and "back" must
+			// never end up on different lines.
+			if strings.Contains(trimmed, "esc") && !strings.Contains(trimmed, "back") {
+				t.Errorf("width %d: line %q has a key without its label", width, line)
+			}
+		}
+		assertFits(t, out, width)
+	}
+}
+
+// The hints have to line up with the rest of the screen, which means leaving
+// them unpadded for whatever centres the block. Padding them to the full
+// terminal width would leave the centring nothing to do and pin them left.
+func TestHelpLeavesCentringToTheCaller(t *testing.T) {
+	const width = 40
+
+	wide := Help(width, [2]string{"space", "pause"}, [2]string{"s", "skip"},
+		[2]string{"esc", "back"}, [2]string{"q", "quit"})
+
+	for line := range strings.SplitSeq(wide, "\n") {
+		if lipgloss.Width(line) >= width {
+			t.Errorf("line %q is %d cells, leaving no room to centre it in %d",
+				line, lipgloss.Width(line), width)
+		}
+	}
+}
+
 func TestTheSessionScreenNamesItsPhase(t *testing.T) {
 	for _, phase := range []string{"FOCUS", "BREAK"} {
 		out := plain(Session{Phase: phase, Remaining: "05:00", BarWidth: 20, Width: 80}.View())

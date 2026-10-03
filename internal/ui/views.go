@@ -160,20 +160,50 @@ func (s Summary) notice() string {
 	}
 }
 
+// separator sits between key hints.
+const separator = "   ·   "
+
 // Help renders the key hints for a screen, wrapped to fit the terminal.
 //
-// Wrapping matters on a narrow window: a hint line that runs off the edge is
-// simply lost, so the keys that do not fit would be invisible.
+// Wrapping matters on a narrow window: a hint that runs off the edge is simply
+// lost, so the keys that do not fit would be invisible.
+//
+// Lines are broken only between entries. Wrapping on spaces alone would split
+// the separator, leaving a lone "·" at the start of a line.
+//
+// The result is deliberately left unpadded so that whatever centres it also
+// centres these lines; padding them to the full width first would leave the
+// centring nothing to do.
 func Help(width int, entries ...[2]string) string {
-	parts := make([]string, 0, len(entries))
+	rendered := make([]string, 0, len(entries))
 	for _, e := range entries {
-		parts = append(parts, KeyCap.Render(e[0])+" "+KeyStyle.Render(e[1]))
+		rendered = append(rendered, KeyCap.Render(e[0])+" "+KeyStyle.Render(e[1]))
 	}
 
-	line := strings.Join(parts, Subtle.Render("   ·   "))
-	if width > 0 {
-		line = lipgloss.NewStyle().Width(width).Render(line)
+	if width <= 0 {
+		return strings.Join(rendered, Subtle.Render(separator))
 	}
 
-	return line
+	sepWidth := lipgloss.Width(separator)
+
+	var lines []string
+	line := ""
+
+	for _, entry := range rendered {
+		switch {
+		case line == "":
+			line = entry
+		case lipgloss.Width(line)+sepWidth+lipgloss.Width(entry) <= width:
+			line += Subtle.Render(separator) + entry
+		default:
+			lines = append(lines, line)
+			line = entry
+		}
+	}
+
+	if line != "" {
+		lines = append(lines, line)
+	}
+
+	return strings.Join(lines, "\n")
 }
