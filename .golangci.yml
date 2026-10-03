@@ -1,0 +1,54 @@
+# golangci-lint configuration.
+#
+# Schema v2 — the v1 layout (`linters-settings`, `output.format`) is not accepted here.
+# See https://golangci-lint.run/docs/configuration/file/
+#
+# Requires golangci-lint v2 or newer. Run `just lint-install` if yours is older.
+version: "2"
+
+run:
+  timeout: 5m
+  # Analyse test files as well as production code.
+  tests: true
+
+linters:
+  # errcheck, govet, ineffassign, staticcheck, unused
+  default: standard
+  enable:
+    - errorlint # %w wrapping and sentinel-error comparison
+    - gocritic # broad correctness and style checks
+    - gomoddirectives
+    - intrange # `for i := range n` over the older three-clause form
+    - misspell
+    - modernize # suggest modern Go idioms for the go.mod directive
+    - nakedret
+    - nolintlint # flag unused or malformed //nolint directives
+    - perfsprint # fmt.Sprintf where strconv is cheaper
+    - prealloc
+    - revive
+    - unconvert
+    - unparam # unused or always-same function parameters
+    - usestdlibvars
+    - usetesting # os.Setenv -> t.Setenv, etc.
+    - whitespace
+
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - std-error-handling
+    rules:
+      # Test files are allowed to be repetitive and lax about error checks.
+      - path: _test\.go
+        linters:
+          - dupl
+          - gosec
+          - errcheck
+
+formatters:
+  enable:
+    - gofmt
+    - gofumpt
+  exclusions:
+    generated: lax

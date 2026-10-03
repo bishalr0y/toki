@@ -7,6 +7,11 @@ test:
 lint:
     golangci-lint run ./...
 
+# Install golangci-lint v2; a v1 build cannot target this module's Go version.
+lint-install:
+    go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0
+    @echo "installed to $(go env GOPATH)/bin — ensure that directory is on your PATH"
+
 run: build
     ./bin/toki
 
