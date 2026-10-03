@@ -12,7 +12,7 @@ func PrintAvailableSplits(cfg config.Config) {
 	t.SetOutputMirror(os.Stdout)
 	t.AppendHeader(table.Row{"#", "Split Name", "Focus(mins)", "Break(mins)"})
 	for i, timer := range cfg.Timers {
-		t.AppendRow([]any{i + 1, timer.Name, timer.Focus, timer.Break})
+		t.AppendRow([]any{i + 1, timer.Name, timer.FocusMins, timer.BreakMins})
 	}
 	t.Render()
 }

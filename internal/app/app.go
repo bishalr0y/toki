@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"time"
 
 	"github.com/bishalr0y/toki/internal/config"
+	"github.com/bishalr0y/toki/internal/session"
 	"github.com/bishalr0y/toki/internal/timer"
 	"github.com/bishalr0y/toki/internal/ui"
 )
@@ -54,13 +56,15 @@ func Run() {
 
 		ui.PeachBold.Println("============================================================")
 		ui.BlueBold.Printf("SELECTED SPLIT: %s || FOCUS: %d min(s) || BREAK: %d min(s)\n",
-			selectedSplit.Name, selectedSplit.Focus, selectedSplit.Break)
+			selectedSplit.Name, selectedSplit.FocusMins, selectedSplit.BreakMins)
 		ui.PeachBold.Println("============================================================")
 
-		focusDuration := selectedSplit.Focus * 60
-		timer.StartSession("FOCUS", focusDuration)
-
-		breakDuration := selectedSplit.Break * 60
-		timer.StartSession("BREAK", breakDuration)
+		split := timer.Split{
+			Focus: time.Duration(selectedSplit.FocusMins) * time.Minute,
+			Break: time.Duration(selectedSplit.BreakMins) * time.Minute,
+		}
+		if err := session.Run(split); err != nil {
+			fmt.Fprintf(os.Stderr, "session error: %v\n", err)
+		}
 	}
 }
