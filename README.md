@@ -1,13 +1,15 @@
 # toki (とき)
 
-A minimal Pomodoro timer for the terminal.
+A Pomodoro timer for the terminal.
 
 ## Features
 
-- Terminal-based Pomodoro sessions with live countdown
-- Configurable focus/break durations via YAML
-- Desktop notifications when sessions complete
-- Color-coded UI
+- Full-screen timer built with [Bubble Tea](https://github.com/charmbracelet/bubbletea)
+- Pause, resume and skip phases without stopping
+- Countdown that tracks the wall clock, so it stays accurate across a suspend
+- Configurable focus/break splits via YAML
+- Desktop notifications per phase, with failures reported on screen
+- Live progress bar, and colour that respects the terminal's own palette
 
 ## Installation
 
@@ -30,7 +32,17 @@ just build
 toki
 ```
 
-Select a timer split from the menu. Press `q` to quit.
+### Keys
+
+| Key      | Menu           | Session          | Summary  |
+| -------- | -------------- | ---------------- | -------- |
+| `↑` `↓`  | move           | –                | –        |
+| `1`–`9`  | start that one | –                | –        |
+| `enter`  | start          | –                | back     |
+| `space`  | –              | pause / resume   | –        |
+| `s`      | –              | skip the phase   | –        |
+| `esc`    | –              | back to the menu | –        |
+| `q`      | quit           | quit             | back     |
 
 ## Configuration
 
