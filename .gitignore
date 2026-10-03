@@ -8,6 +8,9 @@
 *.so
 *.dylib
 
+# Build output
+/bin/
+
 # Test binary, built with `go test -c`
 *.test
 
@@ -26,6 +29,9 @@ go.work.sum
 
 # env file
 .env
+
+# Local planning notes
+PLAN.md
 
 # Editor/IDE
 # .idea/

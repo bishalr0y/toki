@@ -1,6 +1,6 @@
 module github.com/bishalr0y/toki
 
-go 1.26.4
+go 1.26
 
 require (
 	github.com/fatih/color v1.19.0
