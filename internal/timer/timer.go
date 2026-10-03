@@ -102,6 +102,24 @@ func (t Timer) Remaining(now time.Time) time.Duration {
 	return 0
 }
 
+// Progress reports how far through the current phase the timer is, from 0 to 1.
+//
+// It stays frozen while paused, restarts from zero for each phase, and reads 1
+// once every phase is done. A zero-length phase reads 1 rather than dividing by
+// zero.
+func (t Timer) Progress(now time.Time) float64 {
+	total := t.split.Focus
+	if t.phase == PhaseBreak {
+		total = t.split.Break
+	}
+	if total <= 0 {
+		return 1
+	}
+
+	fraction := 1 - float64(t.Remaining(now))/float64(total)
+	return min(max(fraction, 0), 1)
+}
+
 // Pause freezes the countdown at whatever is left.
 //
 // Pausing an already-paused timer does nothing, so a repeated keypress cannot
@@ -142,6 +160,10 @@ func NextTick(now time.Time) time.Duration {
 //
 // Skipping out of break finishes the split. Skipping also clears any pause, so
 // the phase that follows always runs rather than inheriting a frozen clock.
+//
+// The next phase runs for its full length starting from now, which is what a
+// deliberate skip should do. Automatic advancement when a phase runs out must
+// use Advance instead, because that has to preserve the schedule.
 func (t *Timer) Skip(now time.Time) {
 	switch t.phase {
 	case PhaseFocus:
@@ -153,4 +175,28 @@ func (t *Timer) Skip(now time.Time) {
 	}
 	t.paused = false
 	t.pausedRemaining = 0
+}
+
+// Advance completes every phase that has run out and returns the phases it
+// passed through, oldest first.
+//
+// Where Skip gives the next phase a fresh full duration measured from now,
+// Advance keeps to the original schedule: each phase is anchored to the moment
+// the previous one ended. So a phase that ran out while the process was
+// suspended is followed immediately by the next one, and if that also ran out
+// in the meantime it is reported in turn rather than quietly being handed
+// another full duration nobody asked for.
+//
+// A paused timer is never advanced and keeps its pause: time spent away must
+// not be able to end a phase the user deliberately stopped.
+func (t *Timer) Advance(now time.Time) []Phase {
+	var ended []Phase
+
+	for t.Expired(now) {
+		ended = append(ended, t.phase)
+		// Anchoring to the old deadline rather than to now is the whole point.
+		t.Skip(t.deadline)
+	}
+
+	return ended
 }

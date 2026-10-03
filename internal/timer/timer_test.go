@@ -1,6 +1,8 @@
 package timer
 
 import (
+	"math"
+	"slices"
 	"testing"
 	"time"
 )
@@ -211,6 +213,86 @@ func TestSkipClearsAPause(t *testing.T) {
 	}
 }
 
+func TestAdvanceDoesNothingWhileThePhaseIsStillRunning(t *testing.T) {
+	tr := New(standardSplit(), start)
+
+	if ended := tr.Advance(start.Add(10 * time.Minute)); len(ended) != 0 {
+		t.Errorf("Advance mid-phase returned %v, want nothing", ended)
+	}
+	if tr.Phase() != PhaseFocus {
+		t.Errorf("Phase() = %v, want %v; an unfinished phase must not advance", tr.Phase(), PhaseFocus)
+	}
+}
+
+// The break runs for five minutes from the moment focus ended, not from
+// whenever the update happened to arrive.
+func TestAdvanceKeepsTheScheduleRatherThanRestartingFromNow(t *testing.T) {
+	tr := New(standardSplit(), start)
+
+	// Two seconds late to notice that focus is over.
+	late := start.Add(25*time.Minute + 2*time.Second)
+	ended := tr.Advance(late)
+
+	if len(ended) != 1 || ended[0] != PhaseFocus {
+		t.Fatalf("Advance returned %v, want [%v]", ended, PhaseFocus)
+	}
+	if got, want := tr.Remaining(late), 5*time.Minute-2*time.Second; got != want {
+		t.Errorf("Remaining = %v, want %v; the break should end at start+30m, not now+5m", got, want)
+	}
+}
+
+// A phase that ran out while the process was suspended is followed straight
+// away by the next, and one that also ran out is reported rather than being
+// granted a fresh full duration.
+func TestAdvanceCascadesEveryPhaseMissedDuringASuspend(t *testing.T) {
+	tr := New(standardSplit(), start)
+
+	// Suspended for half an hour: both phases ran out.
+	ended := tr.Advance(start.Add(30 * time.Minute))
+
+	want := []Phase{PhaseFocus, PhaseBreak}
+	if !slices.Equal(ended, want) {
+		t.Fatalf("Advance returned %v, want %v", ended, want)
+	}
+	if !tr.Finished() {
+		t.Error("Finished() = false after both phases ran out, want true")
+	}
+}
+
+func TestAdvanceDoesNotRestartTheBreakAfterALongSuspend(t *testing.T) {
+	tr := New(standardSplit(), start)
+
+	// Ten minutes into a twenty five minute focus: still running.
+	if ended := tr.Advance(start.Add(10 * time.Minute)); len(ended) != 0 {
+		t.Fatalf("Advance returned %v, want nothing", ended)
+	}
+	// Another sixteen minutes pass, ending focus one minute ago. The break
+	// therefore owes four of its five minutes, not five.
+	resumed := start.Add(26 * time.Minute)
+	tr.Advance(resumed)
+
+	if got, want := tr.Remaining(resumed), 4*time.Minute; got != want {
+		t.Errorf("Remaining after resuming = %v, want %v", got, want)
+	}
+}
+
+// Pausing is meant to survive any length of absence, so a paused timer must
+// never advance itself, however late the update arrives.
+func TestAdvanceLeavesAPausedTimerAlone(t *testing.T) {
+	tr := New(standardSplit(), start)
+	tr.Pause(start.Add(10 * time.Minute))
+
+	if ended := tr.Advance(start.Add(4 * time.Hour)); len(ended) != 0 {
+		t.Errorf("Advance returned %v while paused, want nothing", ended)
+	}
+	if !tr.Paused() {
+		t.Error("Paused() = false after Advance, want true; a tick must not unpause")
+	}
+	if got, want := tr.Remaining(start.Add(4*time.Hour)), 15*time.Minute; got != want {
+		t.Errorf("Remaining = %v, want a frozen %v", got, want)
+	}
+}
+
 // Ticking one second after the last update makes each update inherit the cost of
 // rendering, so the displayed second creeps out of step with the wall clock.
 // Snapping to whole seconds is the fix.
@@ -254,6 +336,78 @@ func TestPhaseStringNamesEachPhase(t *testing.T) {
 		t.Error("Phase(99).String() = \"\", want a non-empty label")
 	}
 }
+
+func TestProgressTracksThePhaseFromZeroToOne(t *testing.T) {
+	tr := New(standardSplit(), start)
+
+	steps := []struct {
+		after time.Duration
+		want  float64
+		tol   float64
+	}{
+		{0, 0, 1e-9},
+		// A second into a 25 minute phase is 1/1500 of the way through, not
+		// literally nothing.
+		{time.Second, 0, 0.001},
+		{12*time.Minute + 30*time.Second, 0.5, 1e-9},
+		{25 * time.Minute, 1, 1e-9},
+		{40 * time.Minute, 1, 1e-9}, // overrun clamps rather than exceeding 1
+	}
+
+	for _, s := range steps {
+		if got := tr.Progress(start.Add(s.after)); math.Abs(got-s.want) > s.tol {
+			t.Errorf("after %v: Progress = %v, want %v (+/- %v)", s.after, got, s.want, s.tol)
+		}
+	}
+}
+
+func TestProgressRestartsForEachPhase(t *testing.T) {
+	tr := New(standardSplit(), start)
+	tr.Skip(start) // into the 5 minute break
+
+	if got := tr.Progress(start); !closeEnough(got, 0) {
+		t.Errorf("Progress at the start of break = %v, want 0", got)
+	}
+	if got := tr.Progress(start.Add(2*time.Minute + 30*time.Second)); !closeEnough(got, 0.5) {
+		t.Errorf("Progress halfway through a 5m break = %v, want 0.5", got)
+	}
+}
+
+func TestProgressFreezesWhilePaused(t *testing.T) {
+	tr := New(standardSplit(), start)
+	tr.Pause(start.Add(12*time.Minute + 30*time.Second))
+
+	if before := tr.Progress(start.Add(12*time.Minute + 30*time.Second)); !closeEnough(before, 0.5) {
+		t.Fatalf("Progress at pause = %v, want 0.5", before)
+	}
+
+	// Time passes during the pause; the bar must not move.
+	if got := tr.Progress(start.Add(40 * time.Minute)); !closeEnough(got, 0.5) {
+		t.Errorf("Progress during a pause = %v, want a frozen 0.5", got)
+	}
+}
+
+// With no phase running there is nothing left to do, so the bar reads full.
+func TestProgressIsFullWhenThereIsNoPhase(t *testing.T) {
+	tr := New(standardSplit(), start)
+	tr.Skip(start)
+	tr.Skip(start)
+
+	if got := tr.Progress(start); !closeEnough(got, 1) {
+		t.Errorf("Progress when finished = %v, want 1", got)
+	}
+}
+
+// A zero-length phase must not divide by zero.
+func TestProgressHandlesAZeroLengthPhase(t *testing.T) {
+	tr := New(Split{Focus: 0, Break: 0}, start)
+
+	if got := tr.Progress(start); !closeEnough(got, 1) {
+		t.Errorf("Progress with no duration = %v, want 1", got)
+	}
+}
+
+func closeEnough(got, want float64) bool { return math.Abs(got-want) < 1e-9 }
 
 func TestNextTickLandsOnTheNextWholeSecond(t *testing.T) {
 	steps := []struct {
