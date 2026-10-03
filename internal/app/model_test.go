@@ -393,6 +393,26 @@ func TestTheWindowSizeIsRecorded(t *testing.T) {
 	}
 }
 
+// Nothing needs to happen before the first message arrives.
+func TestInitAsksForNothingUpFront(t *testing.T) {
+	if cmd := newTestModel(t).Init(); cmd != nil {
+		t.Error("Init returned a command, want none; the clock only starts once a split is chosen")
+	}
+}
+
+// The alternate screen is what replaced shelling out to `clear`: it keeps the
+// shell's scrollback intact and restores the terminal on exit.
+func TestTheViewDrawsOnTheAlternateScreen(t *testing.T) {
+	v := newTestModel(t).View()
+
+	if !v.AltScreen {
+		t.Error("AltScreen is false, want true")
+	}
+	if strings.TrimSpace(stripANSI(v.Content)) == "" {
+		t.Error("the view has no content")
+	}
+}
+
 func TestEachScreenRendersItsContent(t *testing.T) {
 	picker := newTestModel(t)
 
