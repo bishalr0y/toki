@@ -25,7 +25,12 @@ func Run() {
 
 		ui.RedBold.Println("Press q to quit")
 		ui.GreenBold.Print("Enter your option >> ")
-		fmt.Scan(&choice)
+		if _, err := fmt.Scan(&choice); err != nil {
+			// EOF or unreadable input (piped or closed stdin). Exit cleanly instead
+			// of looping forever on an empty choice.
+			fmt.Fprintln(os.Stderr, "\nno input available, exiting")
+			return
+		}
 		ui.ClearConsole()
 
 		if choice == "q" || choice == "Q" {
