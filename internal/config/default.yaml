@@ -2,7 +2,11 @@ timers:
   - name: long
     focus: 50
     break: 10
+    cycles: 4
+    long_break: 15
 
   - name: short
     focus: 25
     break: 5
+    cycles: 4
+    long_break: 15

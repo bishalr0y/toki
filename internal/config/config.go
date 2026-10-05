@@ -14,14 +14,49 @@ import (
 //go:embed default.yaml
 var defaultCfg embed.FS
 
+const (
+	// DefaultCycles is how many focus rounds a split runs when the config does
+	// not say, which is the usual Pomodoro rhythm.
+	DefaultCycles = 4
+	// DefaultLongBreakMins is how long the rest after the final round lasts when
+	// the config does not say.
+	DefaultLongBreakMins = 15
+)
+
 type TimerSplit struct {
 	Name      string `yaml:"name"`
 	FocusMins int    `yaml:"focus"`
 	BreakMins int    `yaml:"break"`
+	// Cycles is how many focus rounds this split runs before its long break.
+	// Zero means unset and picks up DefaultCycles, so a config file written
+	// before this key existed still works.
+	Cycles int `yaml:"cycles"`
+	// LongBreakMins is how long the break after the final round lasts. Zero
+	// means unset and picks up DefaultLongBreakMins.
+	LongBreakMins int `yaml:"long_break"`
 }
 
 type Config struct {
 	Timers []TimerSplit `yaml:"timers"`
+}
+
+// withDefaults fills in whatever the file left unset.
+//
+// It exists because these keys were added after the first release: a config
+// written before them unmarshals them as zero, and treating zero as invalid
+// would break every existing setup on upgrade. Negative values are left alone
+// so Validate can report them as the mistakes they are.
+func (c Config) withDefaults() Config {
+	for i, split := range c.Timers {
+		if split.Cycles == 0 {
+			split.Cycles = DefaultCycles
+		}
+		if split.LongBreakMins == 0 {
+			split.LongBreakMins = DefaultLongBreakMins
+		}
+		c.Timers[i] = split
+	}
+	return c
 }
 
 // Validate reports the first problem that would make the config unusable.
@@ -46,6 +81,17 @@ func (c Config) Validate() error {
 		if split.BreakMins <= 0 {
 			return fmt.Errorf("timers[%d] %q: break must be a positive number of minutes, got %d",
 				i, split.Name, split.BreakMins)
+		}
+		// Zero is tolerated here because it means "unset" and is filled in by
+		// withDefaults, but a negative value can only be a mistake.
+		if split.Cycles < 0 {
+			return fmt.Errorf("timers[%d] %q: cycles must not be negative, got %d "+
+				"(omit it for the default of %d)", i, split.Name, split.Cycles, DefaultCycles)
+		}
+		if split.LongBreakMins < 0 {
+			return fmt.Errorf("timers[%d] %q: long_break must not be negative, got %d "+
+				"(omit it for the default of %d)",
+				i, split.Name, split.LongBreakMins, DefaultLongBreakMins)
 		}
 	}
 
@@ -98,7 +144,7 @@ func ReadConfig() (Config, error) {
 		return Config{}, fmt.Errorf("invalid config at %s: %w", filepath.Join(configPath, configFile), err)
 	}
 
-	return config, nil
+	return config.withDefaults(), nil
 }
 
 func ReadDefaultConfig() (Config, error) {
@@ -112,5 +158,5 @@ func ReadDefaultConfig() (Config, error) {
 		return Config{}, fmt.Errorf("failed to unmarshal default config: %w", err)
 	}
 
-	return config, nil
+	return config.withDefaults(), nil
 }

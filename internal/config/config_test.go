@@ -140,6 +140,121 @@ func TestReadConfigRejectsAnInvalidFile(t *testing.T) {
 	}
 }
 
+// Cycles and the long break were added after the first release, so every config
+// written before them unmarshals them as zero. That has to mean "use the
+// default" rather than "reject this file", or the new keys would break every
+// existing setup on upgrade.
+func TestAConfigWrittenBeforeCyclesExistedStillLoads(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	configDir := filepath.Join(tmpHome, ".config/toki")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	old := "timers:\n  - name: Classic\n    focus: 25\n    break: 5\n"
+	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(old), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := ReadConfig()
+	if err != nil {
+		t.Fatalf("ReadConfig() = %v, want an existing config to keep working", err)
+	}
+
+	got := cfg.Timers[0]
+	if got.Cycles != DefaultCycles {
+		t.Errorf("Cycles = %d, want the default %d", got.Cycles, DefaultCycles)
+	}
+	if got.LongBreakMins != DefaultLongBreakMins {
+		t.Errorf("LongBreakMins = %d, want the default %d", got.LongBreakMins, DefaultLongBreakMins)
+	}
+}
+
+// Each split carries its own rhythm, so one split can be four rounds while
+// another is two.
+func TestCyclesAndTheLongBreakAreSetPerSplit(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	configDir := filepath.Join(tmpHome, ".config/toki")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	content := `timers:
+  - name: Standard
+    focus: 25
+    break: 5
+    cycles: 4
+    long_break: 15
+  - name: Double
+    focus: 50
+    break: 10
+    cycles: 2
+    long_break: 30
+`
+	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := ReadConfig()
+	if err != nil {
+		t.Fatalf("ReadConfig() = %v", err)
+	}
+
+	if len(cfg.Timers) != 2 {
+		t.Fatalf("got %d timers, want 2", len(cfg.Timers))
+	}
+	if got, want := cfg.Timers[0], (TimerSplit{
+		Name: "Standard", FocusMins: 25, BreakMins: 5, Cycles: 4, LongBreakMins: 15,
+	}); got != want {
+		t.Errorf("Timers[0] = %+v, want %+v", got, want)
+	}
+	if got, want := cfg.Timers[1].Cycles, 2; got != want {
+		t.Errorf("Timers[1].Cycles = %d, want %d; each split keeps its own rhythm", got, want)
+	}
+	if got, want := cfg.Timers[1].LongBreakMins, 30; got != want {
+		t.Errorf("Timers[1].LongBreakMins = %d, want %d", got, want)
+	}
+}
+
+// Zero has to mean "unset" so that old files load, but a negative value is
+// plainly a mistake and must not be quietly replaced by the default: a user who
+// typed -1 would see four rounds and no explanation.
+func TestNegativeCyclesIsRejectedRatherThanDefaulted(t *testing.T) {
+	cfg := Config{Timers: []TimerSplit{
+		{Name: "Standard", FocusMins: 25, BreakMins: 5, Cycles: -1, LongBreakMins: 15},
+	}}
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate() = nil for cycles: -1, want an error")
+	}
+	for _, want := range []string{"timers[0]", "Standard", "cycles", "-1"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not mention %q", err, want)
+		}
+	}
+}
+
+func TestNegativeLongBreakIsRejectedRatherThanDefaulted(t *testing.T) {
+	cfg := Config{Timers: []TimerSplit{
+		{Name: "Standard", FocusMins: 25, BreakMins: 5, Cycles: 4, LongBreakMins: -15},
+	}}
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate() = nil for long_break: -15, want an error")
+	}
+	for _, want := range []string{"timers[0]", "Standard", "long_break", "-15"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not mention %q", err, want)
+		}
+	}
+}
+
 func TestValidateAcceptsAWellFormedConfig(t *testing.T) {
 	cfg := Config{Timers: []TimerSplit{
 		{Name: "Standard", FocusMins: 25, BreakMins: 5},
