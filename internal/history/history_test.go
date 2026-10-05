@@ -239,3 +239,56 @@ func TestAppendLeavesNoHalfWrittenFileBehind(t *testing.T) {
 		}
 	}
 }
+
+// "Today" has to mean the user's day, not UTC's. Truncating in UTC would put the
+// boundary in the wrong place for most of the world: a session finished at 00:30
+// in UTC+5 belongs to the new day, not the one before.
+func TestMidnightUsesTheLocalDayNotUTCs(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		now  time.Time
+		want time.Time
+	}{
+		{
+			name: "ahead of UTC",
+			now:  time.Date(2026, 10, 3, 0, 30, 0, 0, time.FixedZone("east", 5*3600)),
+			want: time.Date(2026, 10, 3, 0, 0, 0, 0, time.FixedZone("east", 5*3600)),
+		},
+		{
+			name: "behind UTC, late in the evening",
+			now:  time.Date(2026, 10, 3, 23, 30, 0, 0, time.FixedZone("west", -7*3600)),
+			want: time.Date(2026, 10, 3, 0, 0, 0, 0, time.FixedZone("west", -7*3600)),
+		},
+		{
+			name: "just after midnight",
+			now:  time.Date(2026, 10, 3, 0, 0, 1, 0, time.FixedZone("east", 5*3600)),
+			want: time.Date(2026, 10, 3, 0, 0, 0, 0, time.FixedZone("east", 5*3600)),
+		},
+		{
+			name: "last instant of the day",
+			now:  time.Date(2026, 10, 3, 23, 59, 59, 0, time.FixedZone("east", 5*3600)),
+			want: time.Date(2026, 10, 3, 0, 0, 0, 0, time.FixedZone("east", 5*3600)),
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			got := Midnight(c.now)
+			if !got.Equal(c.want) {
+				t.Errorf("Midnight(%v) = %v, want %v", c.now, got, c.want)
+			}
+			if got.After(c.now) {
+				t.Errorf("Midnight(%v) = %v, which is after the day has started", c.now, got)
+			}
+		})
+	}
+}
+
+// The boundary has to keep the offset it was given. Rebuilding midnight in a
+// different zone would silently shift the day for anyone west of UTC.
+func TestMidnightKeepsTheGivenOffset(t *testing.T) {
+	now := time.Date(2026, 10, 3, 14, 0, 0, 0, time.FixedZone("east", 5*3600))
+
+	got := Midnight(now)
+	if _, offset := got.Zone(); offset != 5*3600 {
+		t.Errorf("Midnight kept offset %d, want %d", offset, 5*3600)
+	}
+}

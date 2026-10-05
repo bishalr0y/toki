@@ -14,6 +14,12 @@ type Split struct {
 	Name      string
 	FocusMins int
 	BreakMins int
+	// Cycles is how many focus rounds the split runs and LongBreakMins how long
+	// the rest after the last one lasts. The picker shows both, because a four
+	// round split and a one round one with the same focus length are different
+	// commitments and used to be indistinguishable.
+	Cycles        int
+	LongBreakMins int
 }
 
 // SplitsFrom adapts config entries for display, keeping ui decoupled from the
@@ -21,7 +27,13 @@ type Split struct {
 func SplitsFrom(cfg config.Config) []Split {
 	out := make([]Split, 0, len(cfg.Timers))
 	for _, t := range cfg.Timers {
-		out = append(out, Split{Name: t.Name, FocusMins: t.FocusMins, BreakMins: t.BreakMins})
+		out = append(out, Split{
+			Name:          t.Name,
+			FocusMins:     t.FocusMins,
+			BreakMins:     t.BreakMins,
+			Cycles:        t.Cycles,
+			LongBreakMins: t.LongBreakMins,
+		})
 	}
 	return out
 }
@@ -61,22 +73,58 @@ func (p Picker) View() string {
 	)
 }
 
-// rowLabel lays out one split, dropping to a compact form when the terminal is
-// too narrow for the full description rather than letting it run off the edge.
+// rowLabel lays out one split, dropping to a compact form when the full
+// description will not fit rather than letting it run off the edge.
+//
+// The choice is made by measuring the wide form rather than by comparing the
+// terminal against a guessed column width: the name is variable length, so a
+// split called "deep work morning" can push the row past the edge at a width
+// where a shorter name would have fitted.
 func (p Picker) rowLabel(i int, s Split) string {
-	if p.Width < wideRow {
-		return fmt.Sprintf("%d  %s  %d/%d min", i+1, s.Name, s.FocusMins, s.BreakMins)
+	cycles := max(s.Cycles, 1)
+
+	wide := fmt.Sprintf("%d  %-14s  %d × %2d min  ·  %2d min break, %d min long",
+		i+1, s.Name, cycles, s.FocusMins, s.BreakMins, s.LongBreakMins)
+	if lipgloss.Width(wide) <= p.Width {
+		return wide
 	}
-	return fmt.Sprintf("%d  %-14s  %3d min focus  %2d min break", i+1, s.Name, s.FocusMins, s.BreakMins)
+
+	compact := fmt.Sprintf("%d  %s  %d×%d min", i+1, s.Name, cycles, s.FocusMins)
+	if lipgloss.Width(compact) <= p.Width {
+		return compact
+	}
+
+	// Even the compact form is too wide, which means the name alone is. Trim it
+	// so the numbers that make splits comparable survive: a clipped row loses
+	// the rhythm, while a shortened name loses only its tail.
+	return fmt.Sprintf("%d  %s  %d×%d min", i+1, trim(s.Name, p.Width-overhead), cycles, s.FocusMins)
 }
 
-// wideRow is the narrowest width at which the full row description fits.
-const wideRow = 46
+// overhead is the width a row spends on everything except the split's name.
+const overhead = len("1  name  4×50 min")
+
+// trim shortens s to at most width cells, marking that it has been cut.
+func trim(s string, width int) string {
+	if width <= 1 {
+		return ""
+	}
+	if lipgloss.Width(s) <= width {
+		return s
+	}
+	runes := []rune(s)
+	if width <= 2 {
+		return string(runes[:width])
+	}
+	return string(runes[:width-1]) + "…"
+}
 
 // Session renders the live countdown screen.
 type Session struct {
-	SplitName   string
-	Phase       string
+	SplitName string
+	Phase     string
+	// Round says which focus round is running, out of how many the split runs.
+	// Blank on a break, where there is no round to count.
+	Round       string
 	Paused      bool
 	Remaining   string
 	ElapsedFrac float64 // 0 at the start of the phase, 1 when it is over
@@ -89,7 +137,7 @@ func (s Session) View() string {
 	label := LabelFor(s.Phase)
 
 	barStyle := FocusBar
-	if s.Phase == "BREAK" {
+	if s.Phase == "BREAK" || s.Phase == "LONG BREAK" {
 		barStyle = BreakBar
 	}
 
@@ -97,11 +145,19 @@ func (s Session) View() string {
 		Subtle.Render("split: " + s.SplitName),
 		"",
 		label,
+	}
+
+	// Only while working: the round count would be meaningless over a break.
+	if s.Round != "" && s.Phase == "FOCUS" {
+		body = append(body, Subtle.Render(s.Round))
+	}
+
+	body = append(body,
 		"",
 		Countdown.Render(s.Remaining),
 		"",
 		Bar(s.ElapsedFrac, s.BarWidth, barStyle),
-	}
+	)
 
 	if s.Paused {
 		body = append(body, "", PausedLabel.Render("⏸  paused"))
@@ -116,32 +172,44 @@ func (s Session) View() string {
 // Summary renders the screen shown once a split is complete.
 type Summary struct {
 	SplitName string
-	FocusMins int
-	BreakMins int
+	// Rounds is how many focus rounds finished and Focus how long was actually
+	// worked. These are the achievement rather than the plan, because a phase
+	// skipped early means less time was focused than the split calls for.
+	Rounds int
+	Focus  string
+	// Today is the running total for the day, blank when there is none to report.
+	Today string
 
 	// Sent and Failed count the desktop notifications that were actually
 	// attempted, so a session ended by skipping them does not claim they failed.
 	Sent   int
 	Failed int
 
+	// Warning reports anything that went wrong on the way here, such as history
+	// that could not be written.
+	Warning string
+
 	Width int
 }
 
 func (s Summary) View() string {
-	// Stated as the plan rather than as an achievement: skipping a phase early
-	// means less time was actually focused than the split calls for.
-	plan := TextStyle.Render(fmt.Sprintf("%d min focus  ·  %d min break", s.FocusMins, s.BreakMins))
-
 	body := []string{
 		"",
 		SuccessStyle.Render("✓  split complete"),
 		"",
 		TextStyle.Render(s.SplitName),
-		plan,
+		TextStyle.Render(fmt.Sprintf("%d %s  ·  %s focused",
+			s.Rounds, Plural(s.Rounds, "round", "rounds"), s.Focus)),
 	}
 
+	if s.Today != "" {
+		body = append(body, Subtle.Render(s.Today))
+	}
 	if notice := s.notice(); notice != "" {
 		body = append(body, "", notice)
+	}
+	if s.Warning != "" {
+		body = append(body, "", ErrorStyle.Render("⚠  "+s.Warning))
 	}
 
 	return lipgloss.JoinVertical(lipgloss.Center, body...)
@@ -158,6 +226,17 @@ func (s Summary) notice() string {
 	default:
 		return ""
 	}
+}
+
+// Plural picks between a singular and a plural noun for a count.
+//
+// Exported because both the summary and the day's running total count things, and
+// "1 splits" is the sort of detail that makes a screen look unfinished.
+func Plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
 }
 
 // separator sits between key hints.

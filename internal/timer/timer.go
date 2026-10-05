@@ -114,6 +114,12 @@ func (t Timer) Started() bool { return t.started && t.phase != PhaseIdle }
 // Rounds reports how many focus rounds have finished.
 func (t Timer) Rounds() int { return t.rounds }
 
+// Cycles reports how many focus rounds the split runs, never fewer than one.
+//
+// The floor is what the split actually runs, so a caller labelling the round in
+// progress cannot end up claiming "round 1 of 0" for a split with no cycles set.
+func (t Timer) Cycles() int { return t.cycles() }
+
 // nextBreak reports which break follows the focus rounds finished so far: a
 // short one between rounds, and a long one after the last, which is what ends
 // the split.

@@ -7,6 +7,7 @@ import (
 
 	"github.com/bishalr0y/toki/internal/app"
 	"github.com/bishalr0y/toki/internal/config"
+	"github.com/bishalr0y/toki/internal/history"
 )
 
 func main() {
@@ -24,5 +25,10 @@ func run() error {
 		return err
 	}
 
-	return app.Run(cfg)
+	histPath, err := config.HistoryPath()
+	if err != nil {
+		return err
+	}
+
+	return app.Run(cfg, history.NewStore(histPath))
 }

@@ -68,15 +68,24 @@ func TestSplitsFromKeepsEveryTimer(t *testing.T) {
 // The full description does not fit a narrow terminal, so a row has to drop to a
 // compact form rather than run off the edge.
 func TestPickerRowsFitTheTerminal(t *testing.T) {
-	splits := []Split{{Name: "long", FocusMins: 50, BreakMins: 10}}
+	splits := []Split{
+		{Name: "long", FocusMins: 50, BreakMins: 10, Cycles: 4, LongBreakMins: 20},
+		{Name: "short", FocusMins: 25, BreakMins: 5},
+	}
 
 	for _, c := range []struct {
 		name  string
 		width int
 		want  []string
 	}{
-		{"wide shows the durations in full", 80, []string{"long", "50 min focus", "10 min break"}},
-		{"narrow stays compact", 30, []string{"long", "50/10 min"}},
+		{
+			"wide shows the rhythm in full", 80,
+			[]string{"long", "4 × 50 min", "10 min break, 20 min long"},
+		},
+		{"narrow stays compact", 30, []string{"long", "4×50 min"}},
+		// A split that says nothing about cycles still runs one round rather than
+		// none, so it must not read as zero.
+		{"unset cycles reads as one round", 30, []string{"short", "1×25 min"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			out := plain(Picker{Splits: splits, Width: c.width}.View())
@@ -196,7 +205,7 @@ func TestTheSummaryReportsNotificationOutcomes(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			out := plain(Summary{
-				SplitName: "long", FocusMins: 50, BreakMins: 10,
+				SplitName: "long", Rounds: 4, Focus: "3h 20m",
 				Sent: c.sent, Failed: c.failed,
 			}.View())
 
@@ -246,4 +255,126 @@ func plain(s string) string {
 	}
 
 	return out.String()
+}
+
+// The summary answers "what have I done today", so the running total has to be
+// on it.
+func TestTheSummaryShowsTheDaysRunningTotal(t *testing.T) {
+	out := plain(Summary{
+		SplitName: "long", Rounds: 4, Focus: "3h 20m",
+		Today: "today  2 splits  ·  5h 05m",
+	}.View())
+
+	for _, want := range []string{"today", "2 splits", "5h 05m"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("summary is missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// A first run has no history to report, so an empty "today" line would be noise.
+func TestTheSummaryLeavesOutAnEmptyDay(t *testing.T) {
+	out := plain(Summary{SplitName: "long", Rounds: 1, Focus: "25m"}.View())
+
+	if strings.Contains(out, "today") {
+		t.Errorf("summary reports a day total it does not have:\n%s", out)
+	}
+}
+
+// History that could not be written is worth saying out loud: a user who
+// believes a session was saved when it was not has no other way to find out.
+func TestTheSummaryReportsAFailureToSave(t *testing.T) {
+	out := plain(Summary{
+		SplitName: "long", Rounds: 1, Focus: "25m",
+		Warning: "could not save this split to history: disk full",
+	}.View())
+
+	if !strings.Contains(out, "disk full") {
+		t.Errorf("summary hides the failure to save:\n%s", out)
+	}
+}
+
+// The round count is only shown while working: over a break there is no round in
+// progress to count.
+func TestTheSessionScreenShowsTheRoundWhileWorking(t *testing.T) {
+	withRound := plain(Session{Phase: "FOCUS", Round: "round 2 of 4", BarWidth: 20}.View())
+	if !strings.Contains(withRound, "round 2 of 4") {
+		t.Errorf("the session screen hides the round:\n%s", withRound)
+	}
+
+	// A break, even if a round label were somehow supplied.
+	onBreak := plain(Session{Phase: "BREAK", Round: "round 2 of 4", BarWidth: 20}.View())
+	if strings.Contains(onBreak, "round") {
+		t.Errorf("the session screen shows a round during a break:\n%s", onBreak)
+	}
+}
+
+// A long break is a rest phase like any other, so the bar is styled as one. It
+// used to fall through to the focus bar because the comparison only knew about
+// "BREAK".
+func TestTheLongBreakIsDrawnAsRestRatherThanWork(t *testing.T) {
+	onLongBreak := plain(Session{Phase: "LONG BREAK", BarWidth: 20}.View())
+	onFocus := plain(Session{Phase: "FOCUS", BarWidth: 20}.View())
+
+	if onLongBreak == onFocus {
+		t.Error("the long break is drawn identically to focus")
+	}
+	if !strings.Contains(onLongBreak, "LONG BREAK") {
+		t.Errorf("the long break is not named on screen:\n%s", onLongBreak)
+	}
+}
+
+// A name longer than the column padding pushes the row past the terminal, where
+// the tail is simply lost. Choosing the wide layout by a fixed guess cannot catch
+// that, so the label has to be measured.
+//
+// Only the rows are checked: the banner is fixed decoration at 72 cells and
+// cannot narrow to suit.
+func TestAPickerRowNeverRunsOffTheEdgeWhateverTheName(t *testing.T) {
+	long := Split{
+		Name:          "an extremely long split name that will not fit anywhere",
+		FocusMins:     50,
+		BreakMins:     10,
+		Cycles:        4,
+		LongBreakMins: 20,
+	}
+
+	for _, width := range []int{20, 30, 40, 46, 60, 80, 120} {
+		out := plain(Picker{Splits: []Split{long}, Width: width}.View())
+
+		for line := range strings.SplitSeq(out, "\n") {
+			if !strings.Contains(line, "fit anywhere") {
+				continue
+			}
+			if got := lipgloss.Width(line); got > width {
+				t.Errorf("at %d columns the row is %d cells and runs off the edge:\n%s",
+					width, got, line)
+			}
+		}
+	}
+}
+
+// The rhythm is the thing to compare splits on, so it has to be on every row,
+// including the compact ones.
+func TestThePickerShowsTheRhythmAtEveryWidth(t *testing.T) {
+	splits := []Split{{Name: "long", FocusMins: 50, BreakMins: 10, Cycles: 4, LongBreakMins: 20}}
+
+	for _, width := range []int{20, 30, 46, 60, 80} {
+		out := plain(Picker{Splits: splits, Width: width}.View())
+		if !strings.Contains(out, "4") || !strings.Contains(out, "50") {
+			t.Errorf("width %d loses the rhythm:\n%s", width, out)
+		}
+	}
+}
+
+// "1 splits" is the kind of detail that makes a summary look unfinished.
+func TestTheSummaryCountsInTheRightNumber(t *testing.T) {
+	if one := plain(Summary{Rounds: 1, Focus: "25m"}.View()); strings.Contains(one, "1 rounds") {
+		t.Errorf("summary says \"1 rounds\":\n%s", one)
+	}
+
+	many := plain(Summary{Rounds: 3, Focus: "1h 15m"}.View())
+	if !strings.Contains(many, "3 rounds") {
+		t.Errorf("summary is missing \"3 rounds\":\n%s", many)
+	}
 }

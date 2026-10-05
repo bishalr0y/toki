@@ -649,3 +649,52 @@ func TestNextTickAlwaysLandsOnAWholeSecondBoundary(t *testing.T) {
 		}
 	}
 }
+
+// The floor is what the split actually runs, so a caller labelling the round in
+// progress cannot end up claiming "round 1 of 0" for a split with no cycles set.
+func TestCyclesIsNeverLessThanOne(t *testing.T) {
+	for _, c := range []struct {
+		split int
+		want  int
+	}{
+		{4, 4},
+		{1, 1},
+		{0, 1},
+		{-3, 1},
+	} {
+		tr := New(Split{Cycles: c.split}, start)
+		if got := tr.Cycles(); got != c.want {
+			t.Errorf("Cycles with Cycles: %d = %d, want %d", c.split, got, c.want)
+		}
+	}
+}
+
+// While a focus round is running there must always be another round to come, so
+// a label built from Rounds+1 against Cycles cannot claim a round that does not
+// exist. The final long break is the exception that proves it: every round has
+// finished, but the split has not, so Rounds already equals Cycles there.
+func TestAFocusRoundAlwaysHasAnotherRoundToCome(t *testing.T) {
+	tr := New(Split{Focus: time.Minute, Break: time.Minute, LongBreak: time.Minute, Cycles: 3}, start)
+
+	sawFocus := false
+	for i := range 10 {
+		if !tr.Started() {
+			break
+		}
+		if tr.Phase() == PhaseFocus {
+			sawFocus = true
+			if tr.Rounds() >= tr.Cycles() {
+				t.Fatalf("step %d: focus running with %d rounds finished of %d",
+					i, tr.Rounds(), tr.Cycles())
+			}
+		}
+		tr.Skip(start.Add(time.Duration(i) * time.Minute))
+	}
+
+	if !sawFocus {
+		t.Fatal("the loop never saw a focus round, so it proved nothing")
+	}
+	if tr.Started() {
+		t.Error("the split never finished, so the loop proved nothing")
+	}
+}

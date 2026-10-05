@@ -59,6 +59,25 @@ func (c Config) withDefaults() Config {
 	return c
 }
 
+// Dir reports where toki keeps its files.
+func Dir() (string, error) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("failed to get home dir: %w", err)
+	}
+	return filepath.Join(homeDir, ".config/toki"), nil
+}
+
+// HistoryPath reports where finished splits are recorded, alongside the config
+// that describes them.
+func HistoryPath() (string, error) {
+	dir, err := Dir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "history.json"), nil
+}
+
 // Validate reports the first problem that would make the config unusable.
 //
 // Without this, a zero duration yields an instant "session completed!" and a
@@ -99,12 +118,11 @@ func (c Config) Validate() error {
 }
 
 func ReadConfig() (Config, error) {
-	homeDir, err := os.UserHomeDir()
+	configPath, err := Dir()
 	if err != nil {
-		return Config{}, fmt.Errorf("failed to get home dir: %w", err)
+		return Config{}, err
 	}
 
-	configPath := filepath.Join(homeDir, ".config/toki")
 	configFile := "config.yaml"
 
 	data, err := os.ReadFile(filepath.Join(configPath, configFile))

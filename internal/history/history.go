@@ -169,6 +169,17 @@ func (s *Store) Entries() ([]Entry, error) {
 	return entries, nil
 }
 
+// Midnight reports the start of the local day containing now.
+//
+// It exists so that "today" is worked out in the user's own timezone rather than
+// UTC's. Truncating to a day in UTC would put the boundary in the wrong place for
+// most of the world: a session finished at 00:30 local time in UTC+5 would be
+// counted against the day before.
+func Midnight(now time.Time) time.Time {
+	year, month, day := now.Date()
+	return time.Date(year, month, day, 0, 0, 0, 0, now.Location())
+}
+
 // TotalsSince sums the splits that ended at or after from.
 //
 // The caller supplies the boundary rather than the store reading a clock, in the

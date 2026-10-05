@@ -10,6 +10,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/bishalr0y/toki/internal/config"
+	"github.com/bishalr0y/toki/internal/history"
 	"github.com/bishalr0y/toki/internal/timer"
 )
 
@@ -20,17 +21,39 @@ var start = time.Date(2026, 10, 3, 9, 0, 0, 0, time.UTC)
 
 func testConfig() config.Config {
 	return config.Config{Timers: []config.TimerSplit{
-		{Name: "Classic", FocusMins: 25, BreakMins: 5},
-		{Name: "Long", FocusMins: 50, BreakMins: 10},
+		{Name: "Classic", FocusMins: 25, BreakMins: 5, Cycles: 2, LongBreakMins: 15},
+		{Name: "Long", FocusMins: 50, BreakMins: 10, Cycles: 4, LongBreakMins: 20},
 	}}
 }
 
+// fakeHistory stands in for the history file, so a test can assert on what was
+// recorded without touching the disk.
+type fakeHistory struct {
+	appended  []history.Entry
+	appendErr error
+
+	totals    history.Totals
+	totalsErr error
+	askedFrom time.Time
+}
+
+func (f *fakeHistory) Append(e history.Entry) error {
+	f.appended = append(f.appended, e)
+	return f.appendErr
+}
+
+func (f *fakeHistory) TotalsSince(from time.Time) (history.Totals, error) {
+	f.askedFrom = from
+	return f.totals, f.totalsErr
+}
+
 // newTestModel returns a model whose clock is frozen at start and whose
-// notifier is a stub, so nothing pops up on the developer's desktop.
+// notifier and history are stubs, so nothing pops up on the developer's desktop
+// and no files are written.
 func newTestModel(t *testing.T) Model {
 	t.Helper()
 
-	m := New(testConfig())
+	m := New(testConfig(), &fakeHistory{})
 	m.now = func() time.Time { return start }
 	m.notify = func(string) error { return nil }
 
@@ -231,14 +254,35 @@ func TestSkipMovesStraightToTheBreakWithAFullDuration(t *testing.T) {
 	}
 }
 
+// A split runs several phases now, so the summary only appears once the last of
+// them is skipped, not after the first break.
 func TestSkippingTheLastPhaseShowsTheSummary(t *testing.T) {
-	m := press(t, press(t, press(t, newTestModel(t), "enter"), "s"), "s")
+	m := press(t, newTestModel(t), "enter")
+
+	// Two rounds of focus with a break between, then the long break.
+	for i := range 4 {
+		m = skip(t, m, start.Add(time.Duration(i)*40*time.Minute))
+	}
 
 	if m.screen != screenSummary {
 		t.Errorf("screen = %v, want the summary", m.screen)
 	}
 	if !m.timer.Finished() {
 		t.Error("Finished() = false, want true")
+	}
+}
+
+// Reaching the summary early is not a thing: skipping the first break returns to
+// focus rather than ending a two round split.
+func TestSkippingTheFirstBreakCarriesOnIntoTheNextRound(t *testing.T) {
+	m := skip(t, press(t, newTestModel(t), "enter"), start) // focus into break
+	m = skip(t, m, start.Add(25*time.Minute))               // break into focus
+
+	if m.screen != screenSession {
+		t.Fatalf("screen = %v, want the session to carry on", m.screen)
+	}
+	if m.timer.Phase() != timer.PhaseFocus {
+		t.Errorf("phase = %v, want focus", m.timer.Phase())
 	}
 }
 
@@ -275,7 +319,9 @@ func TestStartingAgainAfterLeavingCarriesNoStaleState(t *testing.T) {
 }
 
 func TestTheSummaryGoesBackToThePicker(t *testing.T) {
-	m := press(t, press(t, press(t, press(t, newTestModel(t), "enter"), "s"), "s"), "enter")
+	m := walkToSummary(t, newTestModel(t), start)
+
+	m = press(t, m, "enter")
 
 	if m.screen != screenPicker {
 		t.Errorf("screen = %v, want the picker", m.screen)
@@ -297,18 +343,31 @@ func TestAPhaseThatRunsOutNotifiesAndAdvances(t *testing.T) {
 }
 
 // The regression that matters: with the process frozen across a phase boundary,
-// the break must not be handed a fresh full duration.
+// the phase that follows must not be handed a fresh full duration.
 func TestASuspendDoesNotHandBackExtraTime(t *testing.T) {
 	m := press(t, newTestModel(t), "enter")
 
-	// Half an hour passes: both the focus and the break ran out.
-	m, cmd := tickAt(t, m, start.Add(30*time.Minute))
+	// An hour passes. The split is focus 0-25m, break 25-30m, focus 30-55m, then
+	// a long break ending at 70m. So an hour in, the long break owes ten minutes
+	// rather than a fresh fifteen.
+	late := start.Add(time.Hour)
+	m, cmd := tickAt(t, m, late)
 
-	if m.screen != screenSummary {
-		t.Errorf("screen = %v, want the summary; a suspend must not restart the break", m.screen)
+	if m.screen != screenSession {
+		t.Fatalf("screen = %v, want the session; the long break still has time on it", m.screen)
 	}
-	if got, want := reported(cmd), []string{"BREAK", "FOCUS"}; !equal(got, want) {
-		t.Errorf("notified %v, want %v; both phases ran out", got, want)
+	if m.timer.Phase() != timer.PhaseLongBreak {
+		t.Fatalf("phase = %v, want the long break", m.timer.Phase())
+	}
+	if got, want := m.timer.Remaining(late), 10*time.Minute; got != want {
+		t.Errorf("Remaining = %v, want %v; a suspend must not restart the break", got, want)
+	}
+
+	// reported sorts, because the notifications are launched concurrently and so
+	// arrive in no particular order.
+	want := []string{"BREAK", "FOCUS", "FOCUS"}
+	if got := reported(cmd); !equal(got, want) {
+		t.Errorf("notified %v, want %v; every phase that ran out", got, want)
 	}
 }
 
@@ -418,16 +477,16 @@ func TestEachScreenRendersItsContent(t *testing.T) {
 
 	session := press(t, picker, "enter")
 
-	summary := press(t, press(t, session, "s"), "s")
+	summary := walkToSummary(t, picker, start)
 
 	for _, c := range []struct {
 		name  string
 		model Model
 		want  []string
 	}{
-		{"picker", picker, []string{"Classic", "Long", "25", "50"}},
-		{"session", session, []string{"25:00", "FOCUS", "pause", "skip"}},
-		{"summary", summary, []string{"complete", "25 min focus", "5 min break"}},
+		{"picker", picker, []string{"Classic", "Long", "2 × 25 min", "4 × 50 min"}},
+		{"session", session, []string{"25:00", "FOCUS", "round 1 of 2", "pause", "skip"}},
+		{"summary", summary, []string{"complete", "Classic", "2 rounds", "focused"}},
 	} {
 		got := stripANSI(c.model.render())
 		if strings.TrimSpace(got) == "" {
@@ -550,4 +609,294 @@ func stripANSI(s string) string {
 	}
 
 	return out.String()
+}
+
+// skip advances the model's clock to now and then skips the current phase.
+//
+// The clock moves first so the skip is handled at the new time. Doing it the
+// other way round would apply the previous instant, which quietly dates every
+// record a session produces.
+func skip(t *testing.T, m Model, now time.Time) Model {
+	t.Helper()
+	return press(t, at(m, now), "s")
+}
+
+// walkToSummary skips through every phase of the split so the model reaches its
+// summary, and returns the finished model.
+func walkToSummary(t *testing.T, m Model, begin time.Time) Model {
+	t.Helper()
+
+	m = at(press(t, m, "enter"), begin)
+	for range 20 {
+		if m.screen == screenSummary {
+			return m
+		}
+		m = skip(t, m, m.now().Add(90*time.Minute))
+	}
+	t.Fatal("the split never finished")
+	return m
+}
+
+// runToCompletion walks a split from the picker all the way to its summary.
+func runToCompletion(t *testing.T, m Model, begin time.Time) Model {
+	t.Helper()
+	return walkToSummary(t, m, begin)
+}
+
+// A split that ran all the way through is worth remembering. Without a record,
+// closing the terminal loses the only accounting of the session there will ever
+// be.
+func TestCompletingASplitRecordsItInHistory(t *testing.T) {
+	rec := &fakeHistory{}
+	m := newTestModel(t)
+	m.history = rec
+
+	begin := time.Date(2026, 10, 3, 9, 0, 0, 0, time.UTC)
+	m = at(press(t, m, "enter"), begin)
+
+	// Two rounds of 25 minutes, then the long break.
+	now := begin
+	for range 4 {
+		now = now.Add(40 * time.Minute)
+		m = skip(t, m, now)
+	}
+
+	if m.screen != screenSummary {
+		t.Fatalf("screen = %v, want the summary", m.screen)
+	}
+	if len(rec.appended) != 1 {
+		t.Fatalf("recorded %d entries, want 1", len(rec.appended))
+	}
+
+	got := rec.appended[0]
+	if got.Split != "Classic" {
+		t.Errorf("Split = %q, want %q", got.Split, "Classic")
+	}
+	if !got.StartedAt.Equal(begin) {
+		t.Errorf("StartedAt = %v, want %v", got.StartedAt, begin)
+	}
+	if !got.EndedAt.Equal(now) {
+		t.Errorf("EndedAt = %v, want %v", got.EndedAt, now)
+	}
+	if got.Rounds != 2 {
+		t.Errorf("Rounds = %d, want 2", got.Rounds)
+	}
+	// Two full 25 minute rounds, with the breaks in between not counting.
+	if got.Focus != 50*time.Minute {
+		t.Errorf("Focus = %v, want 50m of work", got.Focus)
+	}
+}
+
+// History holds splits you finished. Abandoning one part way through records
+// nothing, so quitting cannot quietly post a half hour of work as a session.
+func TestAbandoningASplitRecordsNothing(t *testing.T) {
+	for _, k := range []string{"esc", "q"} {
+		t.Run(k, func(t *testing.T) {
+			rec := &fakeHistory{}
+			m := newTestModel(t)
+			m.history = rec
+
+			m = at(press(t, m, "enter"), start)
+			m = at(press(t, m, "s"), start.Add(10*time.Minute))
+			// One round in, then walk away.
+			m = at(press(t, m, k), start.Add(20*time.Minute))
+
+			if len(rec.appended) != 0 {
+				t.Errorf("recorded %d entries after pressing %s, want 0: %+v",
+					len(rec.appended), k, rec.appended)
+			}
+		})
+	}
+}
+
+// History that cannot be written is reported on screen rather than discarded,
+// the same as a notification that fails to send. A user who believes a session
+// was recorded when it was not has no way to find out.
+func TestAFailureToRecordIsReported(t *testing.T) {
+	rec := &fakeHistory{appendErr: errors.New("disk full")}
+	m := newTestModel(t)
+	m.history = rec
+
+	m = runToCompletion(t, m, start)
+
+	if m.warning == "" {
+		t.Error("warning is empty after a failed Append, want it reported")
+	}
+	if !strings.Contains(m.warning, "disk full") {
+		t.Errorf("warning = %q, want it to mention the failure", m.warning)
+	}
+}
+
+// A failed append must not also stop the session being summarised: the work was
+// done whether or not it could be written down.
+func TestAFailureToRecordStillReachesTheSummary(t *testing.T) {
+	rec := &fakeHistory{appendErr: errors.New("disk full")}
+	m := newTestModel(t)
+	m.history = rec
+
+	m = runToCompletion(t, m, start)
+
+	if m.screen != screenSummary {
+		t.Errorf("screen = %v, want the summary even though the append failed", m.screen)
+	}
+}
+
+// The summary answers "what have I done today", so it totals from the start of
+// the local day rather than from the last twenty four hours.
+func TestTheSummaryTotalsFromTheStartOfTheLocalDay(t *testing.T) {
+	rec := &fakeHistory{}
+	m := newTestModel(t)
+	m.history = rec
+
+	// A local time part way through the day, so a UTC-based "start of day" would
+	// give the wrong boundary.
+	begin := time.Date(2026, 10, 3, 14, 30, 0, 0, time.FixedZone("test", 5*3600))
+	m = runToCompletion(t, m, begin)
+
+	want := time.Date(2026, 10, 3, 0, 0, 0, 0, time.FixedZone("test", 5*3600))
+	if !rec.askedFrom.Equal(want) {
+		t.Errorf("totalled from %v, want the local midnight %v", rec.askedFrom, want)
+	}
+}
+
+// A history that cannot be read must not lose the session's own total: that
+// number comes from the timer, not from the file.
+func TestAnUnreadableHistoryStillShowsTheSessionsOwnTotal(t *testing.T) {
+	rec := &fakeHistory{totalsErr: errors.New("permission denied")}
+	m := newTestModel(t)
+	m.history = rec
+
+	m = runToCompletion(t, m, start)
+
+	shown := stripANSI(m.render())
+	if !strings.Contains(shown, "50m") {
+		t.Errorf("summary does not show the session's own focus time:\n%s", shown)
+	}
+	if m.warning == "" {
+		t.Error("warning is empty when the history could not be read, want it reported")
+	}
+}
+
+// The summary has to state what was achieved, which is not the plan when phases
+// were skipped early.
+func TestTheSummaryStatesWhatWasFocusedRatherThanThePlan(t *testing.T) {
+	m := newTestModel(t)
+
+	m = at(press(t, m, "enter"), start)
+	// Abandon the first round two thirds of the way through, then finish the
+	// second in full, then the long break.
+	m = skip(t, m, start.Add(16*time.Minute+40*time.Second))
+	m = skip(t, m, start.Add(40*time.Minute))
+	m = skip(t, m, start.Add(80*time.Minute))
+	m = skip(t, m, start.Add(95*time.Minute))
+
+	if m.screen != screenSummary {
+		t.Fatalf("screen = %v, want the summary", m.screen)
+	}
+
+	shown := stripANSI(m.render())
+	if !strings.Contains(shown, "2 rounds") {
+		t.Errorf("summary does not report the rounds finished:\n%s", shown)
+	}
+	// 16m40s of the first round plus the whole of the second.
+	if !strings.Contains(shown, "41m") {
+		t.Errorf("summary does not report the time actually focused:\n%s", shown)
+	}
+}
+
+// The session screen says which round of how many, so a long split does not look
+// like a short one that has been running too long.
+func TestTheSessionScreenSaysWhichRoundItIs(t *testing.T) {
+	m := press(t, newTestModel(t), "enter")
+
+	if shown := stripANSI(m.render()); !strings.Contains(shown, "round 1 of 2") {
+		t.Errorf("session does not say which round it is:\n%s", shown)
+	}
+
+	// Through the break and into the second round.
+	m = skip(t, m, start.Add(25*time.Minute))
+	m = skip(t, m, start.Add(30*time.Minute))
+
+	if shown := stripANSI(m.render()); !strings.Contains(shown, "round 2 of 2") {
+		t.Errorf("session does not advance the round count:\n%s", shown)
+	}
+}
+
+// The round count is meaningless over a break, where there is no round in
+// progress, so it is left off rather than shown as a number that cannot be right.
+func TestTheRoundCountIsLeftOffDuringABreak(t *testing.T) {
+	m := skip(t, press(t, newTestModel(t), "enter"), start)
+
+	shown := stripANSI(m.render())
+	if !strings.Contains(shown, "BREAK") {
+		t.Fatalf("not in a break:\n%s", shown)
+	}
+	if strings.Contains(shown, "round") {
+		t.Errorf("the round count is shown during a break:\n%s", shown)
+	}
+}
+
+// The picker has to show the rhythm, or a four round split looks identical to a
+// single round one.
+func TestThePickerShowsTheRhythmOfEachSplit(t *testing.T) {
+	m := newTestModel(t)
+
+	shown := stripANSI(m.render())
+	if !strings.Contains(shown, "2 × 25 min") {
+		t.Errorf("picker does not show the rounds and round length:\n%s", shown)
+	}
+}
+
+// A first run has no history behind it, so an empty "today" line would be noise.
+func TestTheSummaryLeavesOutAnEmptyDayTotal(t *testing.T) {
+	rec := &fakeHistory{} // TotalsSince reports nothing finished
+	m := newTestModel(t)
+	m.history = rec
+
+	m = runToCompletion(t, m, start)
+
+	if len(rec.appended) != 1 {
+		t.Fatalf("the split itself should still be recorded, got %d entries", len(rec.appended))
+	}
+
+	shown := stripANSI(m.render())
+	if strings.Contains(shown, "today") {
+		t.Errorf("summary reports a day total of nothing:\n%s", shown)
+	}
+}
+
+// With history behind it, the summary reports the day as well as the session.
+func TestTheSummaryShowsTheDayTotalOnceThereIsOne(t *testing.T) {
+	rec := &fakeHistory{totals: history.Totals{Splits: 3, Focus: 4 * time.Hour}}
+	m := newTestModel(t)
+	m.history = rec
+
+	m = runToCompletion(t, m, start)
+
+	shown := stripANSI(m.render())
+	for _, want := range []string{"today", "3 splits", "4h"} {
+		if !strings.Contains(shown, want) {
+			t.Errorf("summary is missing %q:\n%s", want, shown)
+		}
+	}
+}
+
+// "1 splits" is the kind of detail that makes a summary look unfinished.
+func TestTheDayTotalIsCountedInTheRightNumber(t *testing.T) {
+	for _, c := range []struct {
+		splits int
+		want   string
+	}{
+		{1, "1 split"},
+		{2, "2 splits"},
+	} {
+		rec := &fakeHistory{totals: history.Totals{Splits: c.splits, Focus: time.Hour}}
+		m := newTestModel(t)
+		m.history = rec
+		m = runToCompletion(t, m, start)
+
+		if shown := stripANSI(m.render()); !strings.Contains(shown, c.want) {
+			t.Errorf("with %d splits the summary should say %q:\n%s", c.splits, c.want, shown)
+		}
+	}
 }
