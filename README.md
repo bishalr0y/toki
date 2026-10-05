@@ -110,7 +110,3 @@ just test    # Run tests
 just lint    # Run linter
 just run     # Build and run
 ```
-
-## TODO
-
-- [ ] Resume a split after an unexpected termination
