@@ -288,8 +288,11 @@ func TestTheSummaryLeavesOutAnEmptyDay(t *testing.T) {
 // History that could not be written is worth saying out loud: a user who
 // believes a session was saved when it was not has no other way to find out.
 func TestTheSummaryReportsAFailureToSave(t *testing.T) {
+	// The width is set because a screen that was not told how wide it is has no
+	// width to wrap a warning to, and falls back to one cell. Left unset, this would
+	// have reported a failure to save for the wrong reason.
 	out := plain(Summary{
-		SplitName: "long", Rounds: 1, Focus: "25m",
+		SplitName: "long", Rounds: 1, Focus: "25m", Width: 80,
 		Warning: "could not save this split to history: disk full",
 	}.View())
 
@@ -632,4 +635,222 @@ func kind(rest bool) string {
 		return "rest"
 	}
 	return "work"
+}
+
+// Nothing may render wider than the terminal it was given, at any width.
+//
+// This is a sweep rather than a handful of fixed widths because the overflows did
+// not sit where a spot check would have found them. The picker measured the rhythm
+// text but not the two cells of padding either side of every row, so it overflowed
+// in a band roughly four columns wide — a band that a test at 30 and a test at 60
+// would both have missed. Only walking every width finds a band.
+//
+// A line that is too wide does not merely look wrong: it wraps, and the wrapped
+// remainder is drawn where the next line goes, which pushes everything below it out
+// of alignment for the rest of the session.
+//
+// The floor is the width of the longest fixed string any screen has to show, which
+// on the summary is "4 rounds  ·  1h 40m focused" at 27 cells. Below that something
+// must wrap, and wrapping is worse than useless here: the remainder is drawn over
+// the line below, so the screen stops lining up. A terminal narrower than its own
+// summary text is not a case worth engineering for, and the limit is stated here
+// rather than left to be discovered.
+func TestNoScreenOverflowsAtAnyWidth(t *testing.T) {
+	const minWidth = 27
+
+	splits := []Split{
+		{Name: "Classic", FocusMins: 25, BreakMins: 5, Cycles: 4, LongBreakMins: 15},
+		{Name: "A Really Extremely Long Split Name", FocusMins: 50, BreakMins: 10, Cycles: 3, LongBreakMins: 20},
+	}
+
+	for width := minWidth; width <= 120; width++ {
+		barWidth := min(44, max(width-10, 4))
+
+		screens := []struct {
+			what string
+			out  string
+		}{
+			{"picker, short name", Picker{
+				Splits: splits[:1], Cursor: 0, Width: width,
+			}.View()},
+			{"picker, long name", Picker{
+				Splits: splits, Cursor: 1, Width: width,
+			}.View()},
+			{"session", Session{
+				SplitName: splits[1].Name, Phase: timer.PhaseFocus, Round: "round 1 of 3",
+				Remaining: "25:00", ElapsedFrac: 0.4, BarWidth: barWidth, Width: width,
+			}.View()},
+			{"session, paused with a warning", Session{
+				SplitName: splits[1].Name, Phase: timer.PhaseBreak, Paused: true,
+				Remaining: "05:00", BarWidth: barWidth, Width: width,
+				Warning: "could not save this split to history: permission denied",
+			}.View()},
+			{"summary", Summary{
+				SplitName: splits[1].Name, Rounds: 4, Focus: "1h 40m",
+				Today: "today  2 splits  ·  3h 05m", Sent: 2, Width: width,
+			}.View()},
+			{"help", Help(width,
+				[2]string{"space", "pause"}, [2]string{"s", "skip"},
+				[2]string{"esc", "back"}, [2]string{"q", "quit"})},
+		}
+
+		for _, screen := range screens {
+			for line := range strings.SplitSeq(screen.out, "\n") {
+				if got := lipgloss.Width(line); got > width {
+					t.Errorf("at %d columns the %s is %d cells wide:\n  %q",
+						width, screen.what, got, line)
+				}
+			}
+		}
+	}
+}
+
+// A warning long enough to run off the edge must not take the screen with it.
+//
+// The message is program text, not something the user wrote, so it can be arbitrarily
+// long on its own: a long path, a verbose error from the filesystem.
+//
+// Wrapping is the right treatment here precisely because a filesystem error ends in
+// its cause — "permission denied", the path it applies to — and clipping would drop
+// exactly the part worth reading. So the assertion is that not one character is lost,
+// and it ignores whitespace to say that.
+//
+// Ignoring whitespace is not a convenience. A path longer than the terminal cannot
+// help but be split across lines, and so can the phrase "permission denied" when it
+// lands on a line boundary. Both are still fully readable; a message missing its
+// cause is not. Checking for a substring would fail on a rendering that is perfectly
+// readable, so it would be testing the wrong thing.
+func TestAnOverlongWarningLosesNothing(t *testing.T) {
+	const width = 40
+
+	message := "could not save this split to history: " +
+		"open /home/someone/with/a/very/long/path/to/config/toki/history.json: " +
+		"permission denied"
+
+	out := Session{
+		SplitName: "Classic", Phase: timer.PhaseFocus, Remaining: "25:00",
+		BarWidth: 20, Width: width, Warning: message,
+	}.View()
+
+	assertFits(t, out, width)
+
+	// The warning is the only part of this screen carrying the message.
+	rendered := squeeze(plain(out[strings.Index(plain(out), "could not"):]))
+	if want := squeeze("⚠  " + message); rendered != want {
+		t.Errorf("the warning did not survive intact\n got: %s\nwant: %s", rendered, want)
+	}
+}
+
+// A screen told nothing about the terminal's width must still render a readable
+// warning, not one character per line.
+//
+// This is what the zero value of Width used to do: wrapping to zero cells is
+// technically correct and completely useless, and it read as a crash rather than as
+// a bug. The real program always passes a width, so this only covers a screen built
+// without one — but it is worth pinning, because the failure is silent and ugly.
+func TestAWarningIsReadableWhenNoWidthWasGiven(t *testing.T) {
+	out := plain(Summary{
+		SplitName: "Classic", Rounds: 1, Focus: "25m",
+		Warning: "could not save this split to history: disk full",
+	}.View())
+
+	if !strings.Contains(out, "disk full") {
+		t.Errorf("without a width the warning is unreadable:\n%s", out)
+	}
+	if strings.Contains(out, "d\ni\ns\nk") {
+		t.Errorf("without a width the warning is broken one character per line:\n%s", out)
+	}
+}
+
+// squeeze removes every space from s, so a comparison can tell whether text was lost
+// without caring where the lines happened to break.
+func squeeze(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r == ' ' || r == '\n' {
+			return -1
+		}
+		return r
+	}, s)
+}
+
+// The warning is the longest line on any screen, so it is what runs off the edge
+// first. Sweeping widths is what catches it, because the picker overflowed in a band
+// of four columns that a test at any one width would have stepped straight over.
+func TestAWarningFitsAtEveryWidth(t *testing.T) {
+	message := "could not save this split to history: " +
+		"open /home/someone/with/a/very/long/path/to/config/toki/history.json: " +
+		"permission denied"
+
+	for width := 27; width <= 120; width++ {
+		out := Session{
+			SplitName: "Classic", Phase: timer.PhaseFocus, Remaining: "25:00",
+			BarWidth: min(44, max(width-10, 4)), Width: width, Warning: message,
+		}.View()
+
+		assertFits(t, out, width)
+	}
+}
+
+// The complaint has to say how much room is needed, or the user has no way to know how
+// far to resize. This is better than rendering a cramped screen: a picker whose rows
+// are cut off mid-way through a list looks like a bug, and a help line the user cannot
+// see is a feature they cannot use.
+func TestTooSmallSaysHowMuchRoomIsNeeded(t *testing.T) {
+	out := squeeze(plain(TooSmall(20)))
+
+	for _, want := range []string{"windowtoosmall", "need27wide", "have20"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the message is missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// A window that is too short rather than too narrow must not be told to get wider.
+//
+// The width is not what is wrong in that case, and quoting it anyway would send the
+// user off to widen a window that is already wide enough — while saying nothing about
+// the height, which is the dimension they actually have to change.
+func TestATooShortWindowIsNotToldToGetWider(t *testing.T) {
+	out := squeeze(plain(TooSmallTall(80, 9, 14)))
+
+	for _, want := range []string{"need14tall", "have9"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the message is missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "wide") {
+		t.Errorf("a window that is wide enough is being told about width:\n%s", out)
+	}
+}
+
+// The height quoted has to be the one that was actually needed. It is measured from
+// the rendered screen rather than declared as a constant, so the message stays true as
+// the picker grows by a row per split and warnings add rows of their own.
+func TestTheHeightQuotedIsTheHeightActuallyNeeded(t *testing.T) {
+	out := plain(TooSmallTall(80, 9, 14))
+
+	if !strings.Contains(out, "14") {
+		t.Errorf("the message does not quote the height it was given:\n%s", out)
+	}
+}
+
+// The message has to fit inside the window that triggered it, which is the one
+// place that is guaranteed to be too small for anything.
+func TestTooSmallFitsInsideTheWindowThatAskedForIt(t *testing.T) {
+	for _, size := range [][2]int{{20, 5}, {1, 1}, {10, 3}, {40, 2}} {
+		assertFits(t, TooSmall(size[0]), size[0])
+		assertFits(t, TooSmallTall(size[0], size[1], 30), size[0])
+	}
+}
+
+// The message must not be centred into a window it cannot fit in, which is what
+// lipgloss's centring would otherwise do by padding to the widest line.
+func TestTooSmallNeverExceedsItsOwnWidth(t *testing.T) {
+	for width := 1; width <= 60; width++ {
+		for _, out := range []string{TooSmall(width), TooSmallTall(width, 3, 99)} {
+			if got := lipgloss.Width(out); got > width {
+				t.Errorf("a complaint in %d columns is %d cells wide:\n%q", width, got, out)
+			}
+		}
+	}
 }

@@ -3,6 +3,7 @@ package app
 import (
 	"errors"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -899,4 +900,187 @@ func TestTheDayTotalIsCountedInTheRightNumber(t *testing.T) {
 			t.Errorf("with %d splits the summary should say %q:\n%s", c.splits, c.want, shown)
 		}
 	}
+}
+
+// A window too small to hold the interface must say so, rather than drawing a screen
+// whose rows are clipped or whose help line is off the bottom.
+//
+// The alternative is worse than useless: a picker with its list cut off reads as a
+// bug in toki, and a help line the user cannot see is a feature they cannot use.
+func TestATooSmallWindowSaysSoInsteadOfDrawingAScreen(t *testing.T) {
+	for _, size := range [][2]int{{20, 8}, {26, 24}, {10, 4}, {80, 6}} {
+		m := resized(t, newTestModel(t), size[0], size[1])
+		out := stripANSI(m.render())
+
+		if !saysTooSmall(out) {
+			t.Errorf("at %dx%d no complaint was made:\n%s", size[0], size[1], out)
+		}
+		if strings.Contains(out, "Choose a split") {
+			t.Errorf("at %dx%d the picker was drawn anyway:\n%s", size[0], size[1], out)
+		}
+	}
+}
+
+// The message has to say what is needed, not merely that there is not enough, or the
+// user has no way to know how far to resize.
+func TestTheComplaintSaysHowMuchRoomIsNeeded(t *testing.T) {
+	out := squeeze(stripANSI(resized(t, newTestModel(t), 20, 8).render()))
+
+	for _, want := range []string{"need27wide", "have20"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the complaint does not mention %q:\n%s", want, out)
+		}
+	}
+}
+
+// The height the complaint quotes has to be the height the screen actually needs.
+//
+// This is the whole reason the height is measured from the drawn screen rather than
+// being a constant: the picker is a row taller for every split configured, so any
+// fixed number is wrong for some config. A wrong number here is not cosmetic — it is
+// the instruction the user resizes their window against.
+func TestTheComplaintQuotesTheHeightTheScreenActuallyNeeded(t *testing.T) {
+	want := rowsNeededAt(t)
+
+	complaint := stripANSI(resized(t, newTestModel(t), 80, 3).render())
+	if got := rowsQuotedBy(complaint); got != want {
+		t.Errorf("the complaint asks for %d rows, but the screen needs %d:\n%s",
+			got, want, complaint)
+	}
+}
+
+// Growing the window back has to bring the screen back with it.
+//
+// This is the whole reason for doing the check in render rather than in a one-off
+// error path: a terminal is resized constantly, so "too small" is a state the program
+// sits in and leaves, not a message it prints once. A user dragging a window corner
+// passes through it on the way to any size.
+func TestGrowingTheWindowBackBringsTheScreenBack(t *testing.T) {
+	m := resized(t, newTestModel(t), 20, 8)
+	if !saysTooSmall(stripANSI(m.render())) {
+		t.Fatal("the window was not reported as too small")
+	}
+
+	m = resized(t, m, 80, 24)
+	if out := stripANSI(m.render()); saysTooSmall(out) {
+		t.Errorf("the complaint is still showing at 80x24:\n%s", out)
+	}
+	if !strings.Contains(stripANSI(m.render()), "Choose a split") {
+		t.Error("the picker did not come back at 80x24")
+	}
+}
+
+// A countdown must not be drawn into a window too small to show it. The timer itself
+// keeps running, which is right — pausing a session because the user resized would be
+// a worse failure — but the session screen is what tells them how long is left, and a
+// countdown they cannot see is the one thing a timer must not leave them with.
+func TestTheCountdownIsNotDrawnWhereItCannotBeSeen(t *testing.T) {
+	m := press(t, newTestModel(t), "enter")
+	m = resized(t, m, 20, 8)
+
+	if out := stripANSI(m.render()); strings.Contains(out, "25:00") {
+		t.Errorf("the countdown is still drawn where it cannot be seen:\n%s", out)
+	}
+}
+
+// A short window is as unusable as a narrow one: the picker's list runs off the
+// bottom, taking the help line with it.
+func TestATooShortWindowIsAlsoRefused(t *testing.T) {
+	m := resized(t, newTestModel(t), 80, 10)
+
+	if !saysTooSmall(stripANSI(m.render())) {
+		t.Errorf("a window 10 rows tall was accepted:\n%s", stripANSI(m.render()))
+	}
+}
+
+// Exactly as tall as the screen needs must be enough. An off-by-one either refuses a
+// window that fits or accepts one that does not, and neither is visible in a
+// screenshot at a normal size.
+func TestAWindowExactlyAsTallAsTheScreenNeedsIsAccepted(t *testing.T) {
+	rows := rowsNeededAt(t)
+
+	m := resized(t, newTestModel(t), 80, rows)
+	if out := stripANSI(m.render()); saysTooSmall(out) {
+		t.Errorf("a window of exactly %d rows was refused:\n%s", rows, out)
+	}
+}
+
+// One row short must be refused, so the boundary is exact rather than inclusive by
+// accident.
+func TestOneRowBelowWhatTheScreenNeedsIsRefused(t *testing.T) {
+	rows := rowsNeededAt(t)
+
+	m := resized(t, newTestModel(t), 80, rows-1)
+	if !saysTooSmall(stripANSI(m.render())) {
+		t.Error("a window one row short of what the screen needs was accepted")
+	}
+}
+
+// A window taller than the screen needs must also be accepted, or the check has simply
+// been replaced by a floor that refuses perfectly good windows.
+func TestATallerWindowThanNeededIsAccepted(t *testing.T) {
+	m := resized(t, newTestModel(t), 80, rowsNeededAt(t)+10)
+
+	if out := stripANSI(m.render()); saysTooSmall(out) {
+		t.Errorf("a window with room to spare was refused:\n%s", out)
+	}
+}
+
+// rowsNeededAt is how many rows the picker occupies, counted from the screen itself
+// in a window with room to spare.
+//
+// It is counted rather than read out of the complaint, which would be no test at all:
+// the complaint quotes whatever the code decided to say, so asking it and then
+// checking that it agrees with itself passes for any number, wrong ones included. The
+// row count of a rendered screen is the one thing here that does not come from the code
+// under test.
+func rowsNeededAt(t *testing.T) int {
+	t.Helper()
+
+	roomy := resized(t, newTestModel(t), 80, 200)
+	if saysTooSmall(stripANSI(roomy.render())) {
+		t.Fatal("a window 80 by 200 was refused, so there is no screen to measure")
+	}
+	return strings.Count(roomy.render(), "\n") + 1
+}
+
+// rowsQuotedBy pulls the "need N tall" figure out of a complaint.
+func rowsQuotedBy(out string) int {
+	_, rest, found := strings.Cut(out, "need ")
+	if !found {
+		return 0
+	}
+	rows, _, _ := strings.Cut(rest, " tall")
+	n, err := strconv.Atoi(strings.TrimSpace(rows))
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+// resized sends a window size message and returns the model, which is how a terminal
+// resize arrives.
+func resized(t *testing.T, m Model, width, height int) Model {
+	t.Helper()
+	return send(t, m, tea.WindowSizeMsg{Width: width, Height: height})
+}
+
+// saysTooSmall reports whether a rendered screen is the complaint about the window.
+//
+// It ignores line breaks, because the complaint is wrapped to fit the very window it
+// is complaining about: at ten columns "window too small" spans two lines. A plain
+// substring search would then fail on a message that is present and readable, which is
+// the same trap as the wrapped warning in the ui tests.
+func saysTooSmall(out string) bool {
+	return strings.Contains(squeeze(out), "windowtoosmall")
+}
+
+// squeeze removes every space and line break from s.
+func squeeze(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r == ' ' || r == '\n' {
+			return -1
+		}
+		return r
+	}, s)
 }

@@ -7,6 +7,7 @@ package app
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -339,6 +340,19 @@ func (m Model) View() tea.View {
 }
 
 func (m Model) render() string {
+	// A window too small to hold the interface gets a complaint rather than a screen.
+	// Drawing anyway is worse than it sounds: the picker's list runs off the bottom,
+	// which reads as a bug in toki, and a countdown on screen that cannot be seen is
+	// the one thing a timer must not do.
+	//
+	// This is checked here, on every frame, rather than on the way in, because a
+	// terminal is resized constantly — a user dragging a window corner passes
+	// through this size on the way to any other, so "too small" is a state the
+	// program sits in and then leaves, not a message it prints once.
+	if m.width < ui.MinimumWidth {
+		return ui.TooSmall(m.width)
+	}
+
 	var body, help string
 
 	switch m.screen {
@@ -383,11 +397,30 @@ func (m Model) render() string {
 		)
 	}
 
-	return lipgloss.JoinVertical(lipgloss.Center, body, "", help)
+	out := lipgloss.JoinVertical(lipgloss.Center, body, "", help)
+
+	// The height is checked against what was just drawn rather than against a
+	// constant, because only the drawn screen knows how tall it turned out to be:
+	// the picker grows by a row per split, and a long warning adds rows to whichever
+	// screen it appears on. A constant floor would either clip the split that pushes
+	// it over or refuse a window that happens to be roomy enough, and both would make
+	// the "have X by Y" in the complaint a lie.
+	if rows := strings.Count(out, "\n") + 1; rows > m.height {
+		return ui.TooSmallTall(m.width, m.height, rows)
+	}
+
+	return out
 }
 
+// barWidth is how wide the progress bar is drawn.
+//
+// The floor is deliberately lower than it looks: a bar wider than the terminal
+// wraps, and the wrapped remainder is drawn over the line below it, so on a narrow
+// window the bar would land on top of the help text for the rest of the session.
+// The upper bound keeps the bar a reasonable shape on a wide window rather than
+// letting it run the full width.
 func (m Model) barWidth() int {
-	return min(44, max(m.width-10, 12))
+	return min(44, max(m.width-10, 4))
 }
 
 // roundLabel says which focus round is running, out of how many the split runs.

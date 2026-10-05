@@ -84,22 +84,33 @@ func (p Picker) View() string {
 func (p Picker) rowLabel(i int, s Split) string {
 	cycles := max(s.Cycles, 1)
 
+	// Both row styles pad by two cells on each side, and that padding is rendered
+	// outside the label. Measuring the label against the whole terminal therefore
+	// let every row run four cells too wide, which is enough to wrap in a band of
+	// widths rather than at one: the picker overflowed from about 47 columns to 50
+	// and again from 79 to 82, and fitted neatly in between.
+	avail := p.Width - rowPadding
+
 	wide := fmt.Sprintf("%d  %-14s  %d × %2d min  ·  %2d min break, %d min long",
 		i+1, s.Name, cycles, s.FocusMins, s.BreakMins, s.LongBreakMins)
-	if lipgloss.Width(wide) <= p.Width {
+	if lipgloss.Width(wide) <= avail {
 		return wide
 	}
 
 	compact := fmt.Sprintf("%d  %s  %d×%d min", i+1, s.Name, cycles, s.FocusMins)
-	if lipgloss.Width(compact) <= p.Width {
+	if lipgloss.Width(compact) <= avail {
 		return compact
 	}
 
 	// Even the compact form is too wide, which means the name alone is. Trim it
 	// so the numbers that make splits comparable survive: a clipped row loses
 	// the rhythm, while a shortened name loses only its tail.
-	return fmt.Sprintf("%d  %s  %d×%d min", i+1, trim(s.Name, p.Width-overhead), cycles, s.FocusMins)
+	return fmt.Sprintf("%d  %s  %d×%d min", i+1, trim(s.Name, avail-overhead), cycles, s.FocusMins)
 }
+
+// rowPadding is the width a picker row spends on RowStyle's and SelectedStyle's
+// two cells of padding on each side, which are rendered outside the row's text.
+const rowPadding = 4
 
 // overhead is the width a row spends on everything except the split's name.
 const overhead = len("1  name  4×50 min")
@@ -144,8 +155,12 @@ func (s Session) View() string {
 		barStyle = BreakBar
 	}
 
+	// The name is trimmed rather than trusted to fit: it comes from the config, so
+	// its length is the user's choice and a long one must not push the screen past
+	// the edge. A screen told nothing about the width is not trimmed, since there is
+	// nothing to fit inside.
 	body := []string{
-		Subtle.Render("split: " + s.SplitName),
+		fitted(s.Width, Subtle, "split: "+s.SplitName),
 		"",
 		label,
 	}
@@ -166,10 +181,44 @@ func (s Session) View() string {
 		body = append(body, "", PausedLabel.Render("⏸  paused"))
 	}
 	if s.Warning != "" {
-		body = append(body, "", ErrorStyle.Render("⚠  "+s.Warning))
+		body = append(body, "", warn(s.Warning, s.Width))
 	}
 
 	return lipgloss.JoinVertical(lipgloss.Center, body...)
+}
+
+// defaultWidth is the width assumed when a screen has not been told one.
+//
+// The zero value of Width has to render something readable rather than something
+// technically correct: wrapping to zero cells puts the warning one character per
+// line, which is unreadable and looks like a crash. The real program always passes a
+// width, so this only affects a screen built without one — chiefly a test.
+const defaultWidth = 80
+
+// fitted renders text trimmed to width, or untouched when no width was given.
+//
+// Trimming is right for a single short line of the user's own text, such as a split
+// name: the end of it is not the point, so an ellipsis costs nothing. It is wrong
+// for a warning, which is why that wraps instead.
+func fitted(width int, style lipgloss.Style, text string) string {
+	if width < 1 {
+		return style.Render(text)
+	}
+	return style.Render(trim(text, width))
+}
+
+// warn renders a failure message, wrapped to the terminal and then capped.
+//
+// Wrapping rather than truncating, because the end of one of these messages is its
+// point: "permission denied" and the path it applies to are both the answer, and a
+// clipped line that hid them would leave the reader with a warning they cannot act
+// on. The cap is still applied afterwards so that a single unbroken word longer
+// than the terminal — a path, a filename — cannot push the edge out on its own.
+func warn(message string, width int) string {
+	if width < 1 {
+		width = defaultWidth
+	}
+	return lipgloss.NewStyle().MaxWidth(width).Render(ErrorStyle.Width(width).Render("⚠  " + message))
 }
 
 // Summary renders the screen shown once a split is complete.
@@ -200,7 +249,9 @@ func (s Summary) View() string {
 		"",
 		SuccessStyle.Render("✓  split complete"),
 		"",
-		TextStyle.Render(s.SplitName),
+		// Trimmed for the same reason as the session screen's name: it is the user's
+		// text and its length is theirs to choose.
+		fitted(s.Width, TextStyle, s.SplitName),
 		TextStyle.Render(fmt.Sprintf("%d %s  ·  %s focused",
 			s.Rounds, Plural(s.Rounds, "round", "rounds"), s.Focus)),
 	}
@@ -212,7 +263,7 @@ func (s Summary) View() string {
 		body = append(body, "", notice)
 	}
 	if s.Warning != "" {
-		body = append(body, "", ErrorStyle.Render("⚠  "+s.Warning))
+		body = append(body, "", warn(s.Warning, s.Width))
 	}
 
 	return lipgloss.JoinVertical(lipgloss.Center, body...)
@@ -288,4 +339,61 @@ func Help(width int, entries ...[2]string) string {
 	}
 
 	return strings.Join(lines, "\n")
+}
+
+// MinimumWidth is the narrowest terminal the interface can be drawn in.
+//
+// It is the width of the longest fixed string any screen must show — "4 rounds  ·
+// 1h 40m focused" on the summary, at 27 cells. Below that, something has to wrap,
+// and a wrapped line has its remainder drawn over the line beneath it, so the screen
+// stops lining up rather than merely looking tight.
+//
+// There is no matching height constant, because the height a screen needs is not a
+// property of the terminal but of the screen: the picker is a row taller per split
+// configured, and a long warning adds rows to whichever screen carries it. Callers
+// measure the screen they drew and pass the result to TooSmallTall.
+const MinimumWidth = 27
+
+// TooSmall renders the message shown when the terminal is too narrow to hold the
+// interface.
+//
+// It is drawn instead of a screen rather than alongside it, because the alternative
+// is a picker whose rows are clipped mid-list — which reads as a bug in toki — or a
+// help line the user cannot see, which is a feature they cannot use.
+func TooSmall(width int) string {
+	return complaint(width, fmt.Sprintf("need %d wide, have %d", MinimumWidth, width))
+}
+
+// TooSmallTall is TooSmall for a window that is wide enough but not tall enough, and
+// is told how many rows the screen would have needed so that the message can say so.
+//
+// The number is measured rather than declared because a fixed minimum would be a lie
+// in one direction or the other: it would clip the split that made the list taller,
+// or refuse a window with room to spare. A user who reads "need 16, have 14" can act
+// on it; a user who reads a rounded-off guess cannot.
+//
+// It says nothing about the width, which is not what is wrong here, and quoting it
+// anyway would send the user off to widen a window that is already wide enough.
+func TooSmallTall(width, height, need int) string {
+	return complaint(width, fmt.Sprintf("need %d tall, have %d", need, height))
+}
+
+// complaint renders the message for a window that cannot hold the interface, with
+// detail explaining by how much.
+func complaint(width int, detail string) string {
+	body := []string{
+		ErrorStyle.Render("window too small"),
+		"",
+		// Wrapped rather than clipped, because the sizes are the whole message: a
+		// window too narrow to hold them is exactly the window this is drawn in.
+		Subtle.Render(detail),
+	}
+
+	// Left-aligned rather than centred, and capped at the window that asked:
+	// centring pads every line to the widest one, so in a window too small for that
+	// a message about being too small ends up wider than the window.
+	joined := lipgloss.JoinVertical(lipgloss.Left, body...)
+	return lipgloss.NewStyle().MaxWidth(max(width, 1)).Render(
+		Subtle.Width(max(width, 1)).Render(joined),
+	)
 }
