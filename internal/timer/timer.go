@@ -13,8 +13,11 @@ const (
 	PhaseIdle Phase = iota
 	// PhaseFocus is the working phase.
 	PhaseFocus
-	// PhaseBreak is the rest phase that follows focus.
+	// PhaseBreak is the short rest phase between focus rounds.
 	PhaseBreak
+	// PhaseLongBreak is the longer rest phase that follows the final round. It is
+	// a distinct phase rather than a longer break because it ends the split.
+	PhaseLongBreak
 )
 
 // String renders the phase for display.
@@ -24,6 +27,8 @@ func (p Phase) String() string {
 		return "FOCUS"
 	case PhaseBreak:
 		return "BREAK"
+	case PhaseLongBreak:
+		return "LONG BREAK"
 	case PhaseIdle:
 		return "IDLE"
 	default:
@@ -31,10 +36,32 @@ func (p Phase) String() string {
 	}
 }
 
-// Split is the plan a Timer runs: how long to focus, then how long to rest.
+// Split is the plan a Timer runs: a number of focus rounds, each followed by a
+// break, with the break after the last round made longer.
 type Split struct {
+	// Focus is how long each focus round lasts.
 	Focus time.Duration
+	// Break is the short rest between rounds.
 	Break time.Duration
+	// LongBreak is the rest after the final round.
+	LongBreak time.Duration
+	// Cycles is how many focus rounds the split runs. Zero or less still runs
+	// one round and then ends, so a misconfigured split cannot run forever.
+	Cycles int
+}
+
+// durationFor reports how long a phase of this split lasts.
+func (s Split) durationFor(p Phase) time.Duration {
+	switch p {
+	case PhaseFocus:
+		return s.Focus
+	case PhaseBreak:
+		return s.Break
+	case PhaseLongBreak:
+		return s.LongBreak
+	default:
+		return 0
+	}
 }
 
 // Timer tracks a focus/break pair against the wall clock.
@@ -51,6 +78,12 @@ type Timer struct {
 	phase    Phase
 	deadline time.Time
 
+	// rounds counts the focus rounds already finished, which is what decides
+	// whether the next break is the long one.
+	rounds int
+
+	started bool
+
 	paused          bool
 	pausedRemaining time.Duration
 }
@@ -61,11 +94,35 @@ func New(split Split, now time.Time) Timer {
 		split:    split,
 		phase:    PhaseFocus,
 		deadline: now.Add(split.Focus),
+		started:  true,
 	}
 }
 
 // Phase reports which phase is running, or PhaseIdle when none is.
 func (t Timer) Phase() Phase { return t.phase }
+
+// Started reports whether the Timer has been started and has not yet finished.
+//
+// The zero Timer is usable and reports neither running nor finished, so a caller
+// that has not begun a split can tell the difference between "nothing is
+// happening" and "the split is over".
+func (t Timer) Started() bool { return t.started && t.phase != PhaseIdle }
+
+// Rounds reports how many focus rounds have finished.
+func (t Timer) Rounds() int { return t.rounds }
+
+// nextBreak reports which break follows the focus rounds finished so far: a
+// short one between rounds, and a long one after the last, which is what ends
+// the split.
+func (t Timer) nextBreak() Phase {
+	if t.rounds >= t.cycles() {
+		return PhaseLongBreak
+	}
+	return PhaseBreak
+}
+
+// cycles reports how many focus rounds the split runs, never fewer than one.
+func (t Timer) cycles() int { return max(t.split.Cycles, 1) }
 
 // Expired reports whether the current phase has run out of time and is ready to
 // be advanced with Skip.
@@ -80,7 +137,7 @@ func (t Timer) Expired(now time.Time) bool {
 //
 // This is deliberately not the same question as Expired: a phase that has run
 // out still has to be advanced with Skip before the split is finished.
-func (t Timer) Finished() bool { return t.phase == PhaseIdle }
+func (t Timer) Finished() bool { return t.started && t.phase == PhaseIdle }
 
 // Paused reports whether the timer is holding still.
 func (t Timer) Paused() bool { return t.paused }
@@ -108,10 +165,7 @@ func (t Timer) Remaining(now time.Time) time.Duration {
 // once every phase is done. A zero-length phase reads 1 rather than dividing by
 // zero.
 func (t Timer) Progress(now time.Time) float64 {
-	total := t.split.Focus
-	if t.phase == PhaseBreak {
-		total = t.split.Break
-	}
+	total := t.split.durationFor(t.phase)
 	if total <= 0 {
 		return 1
 	}
@@ -167,9 +221,13 @@ func NextTick(now time.Time) time.Duration {
 func (t *Timer) Skip(now time.Time) {
 	switch t.phase {
 	case PhaseFocus:
-		t.phase = PhaseBreak
-		t.deadline = now.Add(t.split.Break)
+		t.rounds++
+		t.phase = t.nextBreak()
+		t.deadline = now.Add(t.split.durationFor(t.phase))
 	case PhaseBreak:
+		t.phase = PhaseFocus
+		t.deadline = now.Add(t.split.Focus)
+	case PhaseLongBreak:
 		t.phase = PhaseIdle
 		t.deadline = time.Time{}
 	}

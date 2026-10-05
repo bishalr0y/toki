@@ -12,7 +12,12 @@ import (
 var start = time.Date(2026, 10, 3, 9, 0, 0, 0, time.UTC)
 
 func standardSplit() Split {
-	return Split{Focus: 25 * time.Minute, Break: 5 * time.Minute}
+	return Split{
+		Focus:     25 * time.Minute,
+		Break:     5 * time.Minute,
+		LongBreak: 15 * time.Minute,
+		Cycles:    4,
+	}
 }
 
 func TestNewStartsInFocusWithTheFullDuration(t *testing.T) {
@@ -184,19 +189,107 @@ func TestBreakRunningOutDoesNotFinishTheSplitOnItsOwn(t *testing.T) {
 	}
 }
 
-func TestSkipFromBreakFinishesTheSplit(t *testing.T) {
+// A four-round split is focus and break four times over, with the last break
+// made long. It is not done until that long break runs out.
+func TestASplitCyclesThroughEveryFocusRoundBeforeTheLongBreak(t *testing.T) {
 	tr := New(standardSplit(), start)
-	tr.Skip(start)
-	tr.Skip(start.Add(5 * time.Minute))
 
-	if got := tr.Phase(); got != PhaseIdle {
-		t.Errorf("Phase() = %v, want %v", got, PhaseIdle)
+	// The phases the split runs through, in order, and what each one lasts.
+	want := []struct {
+		phase    Phase
+		duration time.Duration
+	}{
+		{PhaseFocus, 25 * time.Minute},
+		{PhaseBreak, 5 * time.Minute},
+		{PhaseFocus, 25 * time.Minute},
+		{PhaseBreak, 5 * time.Minute},
+		{PhaseFocus, 25 * time.Minute},
+		{PhaseBreak, 5 * time.Minute},
+		{PhaseFocus, 25 * time.Minute},
+		{PhaseLongBreak, 15 * time.Minute},
+		{PhaseIdle, 0},
 	}
+
+	at := start
+	for i, w := range want {
+		if got := tr.Phase(); got != w.phase {
+			t.Fatalf("step %d: Phase() = %v, want %v", i, got, w.phase)
+		}
+		if got := tr.Remaining(at); got != w.duration {
+			t.Fatalf("step %d: Remaining = %v, want %v", i, got, w.duration)
+		}
+		if got, want := tr.Finished(), w.phase == PhaseIdle; got != want {
+			t.Fatalf("step %d: Finished() = %v, want %v", i, got, want)
+		}
+
+		// Let the phase run out, then move on at the moment it ended, so each
+		// phase is skipped rather than abandoned early.
+		at = at.Add(w.duration)
+		tr.Skip(at)
+	}
+
 	if !tr.Finished() {
-		t.Error("Finished() = false after both phases, want true")
+		t.Error("Finished() = false at the end of the split, want true")
 	}
-	if got := tr.Remaining(start.Add(5 * time.Minute)); got != 0 {
-		t.Errorf("Remaining when finished = %v, want 0", got)
+}
+
+// A split with a single round has nothing to make a long break worthwhile
+// after, but it still ends: focus, one break, done.
+func TestASingleRoundSplitEndsAfterOneBreak(t *testing.T) {
+	tr := New(Split{
+		Focus:     25 * time.Minute,
+		Break:     5 * time.Minute,
+		LongBreak: 15 * time.Minute,
+		Cycles:    1,
+	}, start)
+
+	tr.Skip(start)
+	if got := tr.Phase(); got != PhaseLongBreak {
+		t.Fatalf("Phase() = %v, want %v", got, PhaseLongBreak)
+	}
+
+	tr.Skip(start.Add(25 * time.Minute))
+	if !tr.Finished() {
+		t.Error("Finished() = false after the single round and its break, want true")
+	}
+}
+
+// A split that never says how many rounds it wants must still end rather than
+// running forever, so that a hand-written config cannot hang the timer.
+func TestASplitWithNoCyclesStillEnds(t *testing.T) {
+	tr := New(Split{Focus: 25 * time.Minute, Break: 5 * time.Minute, LongBreak: 15 * time.Minute}, start)
+
+	// One round is as much as an unset Cycles asks for.
+	tr.Skip(start)
+
+	if got := tr.Phase(); got != PhaseLongBreak {
+		t.Fatalf("Phase() = %v, want %v", got, PhaseLongBreak)
+	}
+	if tr.Finished() {
+		t.Error("Finished() = true mid-split with Cycles unset, want false")
+	}
+
+	tr.Skip(start.Add(25 * time.Minute))
+	if !tr.Finished() {
+		t.Error("Finished() = false after one round with Cycles unset, want true")
+	}
+}
+
+// The zero Timer is not running anything. Without Started, an unstarted timer
+// reports Finished because it has no phase, which reads as "your session
+// ended" before it ever began.
+func TestAnUnstartedTimerIsNeitherRunningNorFinished(t *testing.T) {
+	var tr Timer
+
+	if tr.Started() {
+		t.Error("Started() = true on the zero Timer, want false")
+	}
+	if tr.Finished() {
+		t.Error("Finished() = true on the zero Timer, want false")
+	}
+
+	if running := New(standardSplit(), start); !running.Started() {
+		t.Error("Started() = false on a fresh split, want true")
 	}
 }
 
@@ -247,15 +340,52 @@ func TestAdvanceKeepsTheScheduleRatherThanRestartingFromNow(t *testing.T) {
 func TestAdvanceCascadesEveryPhaseMissedDuringASuspend(t *testing.T) {
 	tr := New(standardSplit(), start)
 
-	// Suspended for half an hour: both phases ran out.
+	// Suspended for half an hour: the focus round and the break both ran out,
+	// and the second focus round is running on the original schedule.
 	ended := tr.Advance(start.Add(30 * time.Minute))
 
 	want := []Phase{PhaseFocus, PhaseBreak}
 	if !slices.Equal(ended, want) {
 		t.Fatalf("Advance returned %v, want %v", ended, want)
 	}
+	if got := tr.Phase(); got != PhaseFocus {
+		t.Fatalf("Phase() = %v, want %v", got, PhaseFocus)
+	}
+	if tr.Finished() {
+		t.Error("Finished() = true after one round of four, want false")
+	}
+	if got := tr.Rounds(); got != 1 {
+		t.Errorf("Rounds() = %d, want 1", got)
+	}
+	if got, want := tr.Remaining(start.Add(30*time.Minute)), 25*time.Minute; got != want {
+		t.Errorf("Remaining = %v, want %v; the new round should end at start+55m", got, want)
+	}
+}
+
+// A suspend long enough to run out the whole split reports every phase and
+// leaves the timer finished, rather than handing out fresh rounds nobody asked
+// for.
+func TestAdvanceCascadesAWholeSplitMissedDuringASuspend(t *testing.T) {
+	tr := New(Split{
+		Focus:     25 * time.Minute,
+		Break:     5 * time.Minute,
+		LongBreak: 15 * time.Minute,
+		Cycles:    2,
+	}, start)
+
+	// 25 focus + 5 break + 25 focus + 15 long break = 70m, so 90m is well past
+	// the end of the split.
+	ended := tr.Advance(start.Add(90 * time.Minute))
+
+	want := []Phase{PhaseFocus, PhaseBreak, PhaseFocus, PhaseLongBreak}
+	if !slices.Equal(ended, want) {
+		t.Fatalf("Advance returned %v, want %v", ended, want)
+	}
 	if !tr.Finished() {
-		t.Error("Finished() = false after both phases ran out, want true")
+		t.Error("Finished() = false after the whole split ran out, want true")
+	}
+	if got := tr.Rounds(); got != 2 {
+		t.Errorf("Rounds() = %d, want 2", got)
 	}
 }
 
@@ -322,6 +452,7 @@ func TestPhaseStringNamesEachPhase(t *testing.T) {
 		{PhaseIdle, "IDLE"},
 		{PhaseFocus, "FOCUS"},
 		{PhaseBreak, "BREAK"},
+		{PhaseLongBreak, "LONG BREAK"},
 	}
 
 	for _, s := range steps {
@@ -389,13 +520,27 @@ func TestProgressFreezesWhilePaused(t *testing.T) {
 
 // With no phase running there is nothing left to do, so the bar reads full.
 func TestProgressIsFullWhenThereIsNoPhase(t *testing.T) {
-	tr := New(standardSplit(), start)
-	tr.Skip(start)
-	tr.Skip(start)
+	tr := runToEnd(New(standardSplit(), start), start)
 
+	if !tr.Finished() {
+		t.Fatalf("runToEnd left the split unfinished, phase %v", tr.Phase())
+	}
 	if got := tr.Progress(start); !closeEnough(got, 1) {
 		t.Errorf("Progress when finished = %v, want 1", got)
 	}
+}
+
+// runToEnd skips through a whole split, letting each phase run out first, and
+// returns the finished timer.
+func runToEnd(tr Timer, at time.Time) Timer {
+	for range 100 {
+		if tr.Finished() {
+			return tr
+		}
+		at = at.Add(tr.split.durationFor(tr.Phase()))
+		tr.Skip(at)
+	}
+	return tr
 }
 
 // A zero-length phase must not divide by zero.
