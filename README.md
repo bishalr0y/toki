@@ -33,12 +33,19 @@ just build
 ## Usage
 
 ```bash
-toki
+toki              # start the interface and pick a split
+toki --list       # print the configured splits and exit
+toki --help       # show the help and exit
+toki --version    # print the version and exit
 ```
 
 Pick a split with `↑` `↓` and `enter`, or press its number to start it
 immediately. `q` quits from anywhere; `esc` abandons a split without recording
 it.
+
+`toki --list` prints the splits as they will actually run, so it is the quickest
+way to check that an edit to `config.yaml` took effect without launching
+anything.
 
 ### Keys
 

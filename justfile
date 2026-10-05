@@ -1,5 +1,8 @@
+# Stamped into `toki --version`. Override per build: `just build version=1.2.3`.
+version := "dev"
+
 build:
-    go build -o bin/toki ./cmd/toki
+    go build -ldflags "-X main.version={{version}}" -o bin/toki ./cmd/toki
 
 test:
     go test -race -count=1 ./...
