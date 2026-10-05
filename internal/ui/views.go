@@ -7,6 +7,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/bishalr0y/toki/internal/config"
+	"github.com/bishalr0y/toki/internal/timer"
 )
 
 // Split is the display model for one row of the picker.
@@ -121,7 +122,9 @@ func trim(s string, width int) string {
 // Session renders the live countdown screen.
 type Session struct {
 	SplitName string
-	Phase     string
+	// Phase is the timer's own type rather than its rendered text, so a screen
+	// cannot come to a different conclusion about a phase from another one.
+	Phase timer.Phase
 	// Round says which focus round is running, out of how many the split runs.
 	// Blank on a break, where there is no round to count.
 	Round       string
@@ -137,7 +140,7 @@ func (s Session) View() string {
 	label := LabelFor(s.Phase)
 
 	barStyle := FocusBar
-	if s.Phase == "BREAK" || s.Phase == "LONG BREAK" {
+	if isRest(s.Phase) {
 		barStyle = BreakBar
 	}
 
@@ -148,7 +151,7 @@ func (s Session) View() string {
 	}
 
 	// Only while working: the round count would be meaningless over a break.
-	if s.Round != "" && s.Phase == "FOCUS" {
+	if s.Round != "" && s.Phase == timer.PhaseFocus {
 		body = append(body, Subtle.Render(s.Round))
 	}
 

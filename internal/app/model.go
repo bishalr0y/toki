@@ -345,7 +345,7 @@ func (m Model) render() string {
 	case screenSession:
 		body = ui.Session{
 			SplitName:   m.name,
-			Phase:       m.timer.Phase().String(),
+			Phase:       m.timer.Phase(),
 			Round:       roundLabel(m.timer),
 			Paused:      m.timer.Paused(),
 			Remaining:   timer.Format(m.timer.Remaining(m.now())),
