@@ -14,7 +14,6 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/bishalr0y/toki/internal/config"
-	"github.com/bishalr0y/toki/internal/history"
 	"github.com/bishalr0y/toki/internal/notify"
 	"github.com/bishalr0y/toki/internal/timer"
 	"github.com/bishalr0y/toki/internal/ui"
@@ -41,14 +40,6 @@ type notifyMsg struct {
 	err   error
 }
 
-// recorder is where completed splits are written and daily totals are read
-// from. It is an interface so the model does not care that history happens to be
-// a file, and so a test can assert on what was recorded without touching disk.
-type recorder interface {
-	Append(history.Entry) error
-	TotalsSince(time.Time) (history.Totals, error)
-}
-
 // Model is the entire application state.
 type Model struct {
 	splits []ui.Split
@@ -59,18 +50,10 @@ type Model struct {
 	split timer.Split
 	name  string
 
-	// startedAt bounds the session, so the record of a finished split knows when
-	// it began rather than when it was written down.
-	startedAt time.Time
-
 	// focused and rounds are kept as they were at the moment the split ended,
 	// because once the timer goes back to PhaseIdle it no longer knows.
 	focused time.Duration
 	rounds  int
-
-	// today is the running total for the local day, read once when a split
-	// finishes.
-	today history.Totals
 
 	// sent and failed count the notifications actually attempted, so the
 	// summary can report on them without claiming a failure that never happened.
@@ -89,16 +72,13 @@ type Model struct {
 	// now is indirected so tests can anchor a session to a fixed instant
 	// instead of the wall clock.
 	now func() time.Time
-
-	history recorder
 }
 
 // New builds the initial model for a set of configured splits.
-func New(cfg config.Config, hist recorder) Model {
+func New(cfg config.Config) Model {
 	return Model{
-		splits:  ui.SplitsFrom(cfg),
-		screen:  screenPicker,
-		history: hist,
+		splits: ui.SplitsFrom(cfg),
+		screen: screenPicker,
 		// Sensible defaults so the very first frame, drawn before any
 		// WindowSizeMsg arrives, is not degenerate.
 		width:  80,
@@ -158,39 +138,16 @@ func (m Model) onTick(now time.Time) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
-// complete marks the split finished: it records what was achieved and moves to
-// the summary.
+// complete marks the split finished: it keeps what was achieved and moves to the
+// summary.
 //
-// A split that fails to record still gets its summary, because the work was done
-// whether or not it could be written down. The failure is reported rather than
-// swallowed, so a user who believes a session was saved when it was not has some
-// way of finding out.
+// The figures stay in the model rather than being written anywhere, so there is
+// nothing here that can fail and no warning to give. The summary reports the
+// session that just ran, not a day of sessions.
 func (m Model) complete(now time.Time) Model {
 	m.focused = m.timer.Focused(now)
 	m.rounds = m.timer.Rounds()
 	m.screen = screenSummary
-
-	if err := m.history.Append(history.Entry{
-		Split:     m.name,
-		StartedAt: m.startedAt,
-		EndedAt:   now,
-		Focus:     m.focused,
-		Rounds:    m.rounds,
-	}); err != nil {
-		m.warning = fmt.Sprintf("could not save this split to history: %v", err)
-		return m
-	}
-
-	// Read the day's total back including what was just written, so the summary
-	// does not have to add to it by hand and cannot be one record out of step.
-	totals, err := m.history.TotalsSince(history.Midnight(now))
-	if err != nil {
-		// The session's own total still stands, so only the day's running figure
-		// is missing.
-		m.warning = fmt.Sprintf("could not read today's history: %v", err)
-		return m
-	}
-	m.today = totals
 
 	return m
 }
@@ -280,9 +237,7 @@ func (m Model) start(now time.Time) (tea.Model, tea.Cmd) {
 	}
 	m.name = split.Name
 	m.timer = timer.New(m.split, now)
-	m.startedAt = now
 	m.focused, m.rounds = 0, 0
-	m.today = history.Totals{}
 	m.screen = screenSession
 	m.warning = ""
 	m.sent, m.failed = 0, 0
@@ -306,7 +261,6 @@ func (m Model) skipPhase(now time.Time) (tea.Model, tea.Cmd) {
 func (m Model) toPicker() Model {
 	m.screen = screenPicker
 	m.timer = timer.Timer{}
-	m.startedAt = time.Time{}
 	return m
 }
 
@@ -380,7 +334,6 @@ func (m Model) render() string {
 			SplitName: m.name,
 			Rounds:    m.rounds,
 			Focus:     timer.FormatTotal(m.focused),
-			Today:     todayLabel(m.today),
 			Sent:      m.sent,
 			Failed:    m.failed,
 			Warning:   m.warning,
@@ -432,15 +385,4 @@ func (m Model) barWidth() int {
 func roundLabel(tr timer.Timer) string {
 	cycles := max(tr.Cycles(), 1)
 	return fmt.Sprintf("round %d of %d", min(tr.Rounds()+1, cycles), cycles)
-}
-
-// todayLabel reports the day's running total, and nothing at all when there is
-// none, since an empty "today: 0 splits" is noise on a first run.
-func todayLabel(totals history.Totals) string {
-	if totals.Splits == 0 {
-		return ""
-	}
-	return fmt.Sprintf("today  %d %s  ·  %s",
-		totals.Splits, ui.Plural(totals.Splits, "split", "splits"),
-		timer.FormatTotal(totals.Focus))
 }

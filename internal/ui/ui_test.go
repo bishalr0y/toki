@@ -261,43 +261,20 @@ func plain(s string) string {
 	return out.String()
 }
 
-// The summary answers "what have I done today", so the running total has to be
-// on it.
-func TestTheSummaryShowsTheDaysRunningTotal(t *testing.T) {
-	out := plain(Summary{
-		SplitName: "long", Rounds: 4, Focus: "3h 20m",
-		Today: "today  2 splits  ·  5h 05m",
-	}.View())
-
-	for _, want := range []string{"today", "2 splits", "5h 05m"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("summary is missing %q:\n%s", want, out)
-		}
-	}
-}
-
-// A first run has no history to report, so an empty "today" line would be noise.
-func TestTheSummaryLeavesOutAnEmptyDay(t *testing.T) {
-	out := plain(Summary{SplitName: "long", Rounds: 1, Focus: "25m"}.View())
-
-	if strings.Contains(out, "today") {
-		t.Errorf("summary reports a day total it does not have:\n%s", out)
-	}
-}
-
-// History that could not be written is worth saying out loud: a user who
-// believes a session was saved when it was not has no other way to find out.
-func TestTheSummaryReportsAFailureToSave(t *testing.T) {
+// A warning is worth saying out loud: a user who believes a notification was sent
+// when it was not has no other way to find out, and a split that ended silently is
+// a split that is easy to miss.
+func TestTheSummaryReportsAFailedNotification(t *testing.T) {
 	// The width is set because a screen that was not told how wide it is has no
 	// width to wrap a warning to, and falls back to one cell. Left unset, this would
-	// have reported a failure to save for the wrong reason.
+	// have reported a missing notification for the wrong reason.
 	out := plain(Summary{
 		SplitName: "long", Rounds: 1, Focus: "25m", Width: 80,
-		Warning: "could not save this split to history: disk full",
+		Warning: `desktop notification failed: exec: "notify-send": not found`,
 	}.View())
 
-	if !strings.Contains(out, "disk full") {
-		t.Errorf("summary hides the failure to save:\n%s", out)
+	if !strings.Contains(out, "notify-send") {
+		t.Errorf("summary hides the failure to notify:\n%s", out)
 	}
 }
 
@@ -413,8 +390,7 @@ func TestNoScreenAsksForAFixedColourValue(t *testing.T) {
 			Remaining: "05:00", BarWidth: 20, Width: 80, Warning: "careful",
 		}.View()},
 		{"summary", Summary{
-			SplitName: "long", Rounds: 4, Focus: "3h 20m",
-			Today: "today  2 splits  ·  5h 05m", Sent: 2, Width: 80,
+			SplitName: "long", Rounds: 4, Focus: "3h 20m", Sent: 2, Width: 80,
 		}.View()},
 		{"help", Help(80, [2]string{"space", "pause"}, [2]string{"t", "theme"},
 			[2]string{"q", "quit"})},
@@ -683,11 +659,11 @@ func TestNoScreenOverflowsAtAnyWidth(t *testing.T) {
 			{"session, paused with a warning", Session{
 				SplitName: splits[1].Name, Phase: timer.PhaseBreak, Paused: true,
 				Remaining: "05:00", BarWidth: barWidth, Width: width,
-				Warning: "could not save this split to history: permission denied",
+				Warning: "desktop notification failed: notify-send: not found",
 			}.View()},
 			{"summary", Summary{
 				SplitName: splits[1].Name, Rounds: 4, Focus: "1h 40m",
-				Today: "today  2 splits  ·  3h 05m", Sent: 2, Width: width,
+				Sent: 2, Width: width,
 			}.View()},
 			{"help", Help(width,
 				[2]string{"space", "pause"}, [2]string{"s", "skip"},
@@ -723,8 +699,8 @@ func TestNoScreenOverflowsAtAnyWidth(t *testing.T) {
 func TestAnOverlongWarningLosesNothing(t *testing.T) {
 	const width = 40
 
-	message := "could not save this split to history: " +
-		"open /home/someone/with/a/very/long/path/to/config/toki/history.json: " +
+	message := "desktop notification failed: " +
+		"exec /home/someone/with/a/very/long/path/to/bin/notify-send: " +
 		"permission denied"
 
 	out := Session{
@@ -735,7 +711,7 @@ func TestAnOverlongWarningLosesNothing(t *testing.T) {
 	assertFits(t, out, width)
 
 	// The warning is the only part of this screen carrying the message.
-	rendered := squeeze(plain(out[strings.Index(plain(out), "could not"):]))
+	rendered := squeeze(plain(out[strings.Index(plain(out), "desktop"):]))
 	if want := squeeze("⚠  " + message); rendered != want {
 		t.Errorf("the warning did not survive intact\n got: %s\nwant: %s", rendered, want)
 	}
@@ -751,13 +727,13 @@ func TestAnOverlongWarningLosesNothing(t *testing.T) {
 func TestAWarningIsReadableWhenNoWidthWasGiven(t *testing.T) {
 	out := plain(Summary{
 		SplitName: "Classic", Rounds: 1, Focus: "25m",
-		Warning: "could not save this split to history: disk full",
+		Warning: "desktop notification failed: exec: \"notify-send\": not found",
 	}.View())
 
-	if !strings.Contains(out, "disk full") {
+	if !strings.Contains(out, "notify-send") {
 		t.Errorf("without a width the warning is unreadable:\n%s", out)
 	}
-	if strings.Contains(out, "d\ni\ns\nk") {
+	if strings.Contains(out, "n\no\nt\ni") {
 		t.Errorf("without a width the warning is broken one character per line:\n%s", out)
 	}
 }
@@ -777,8 +753,8 @@ func squeeze(s string) string {
 // first. Sweeping widths is what catches it, because the picker overflowed in a band
 // of four columns that a test at any one width would have stepped straight over.
 func TestAWarningFitsAtEveryWidth(t *testing.T) {
-	message := "could not save this split to history: " +
-		"open /home/someone/with/a/very/long/path/to/config/toki/history.json: " +
+	message := "desktop notification failed: " +
+		"exec /home/someone/with/a/very/long/path/to/bin/notify-send: " +
 		"permission denied"
 
 	for width := 27; width <= 120; width++ {
@@ -851,6 +827,19 @@ func TestTooSmallNeverExceedsItsOwnWidth(t *testing.T) {
 			if got := lipgloss.Width(out); got > width {
 				t.Errorf("a complaint in %d columns is %d cells wide:\n%q", width, got, out)
 			}
+		}
+	}
+}
+
+// A count of one has to read in the singular, on whichever screen reports a count.
+func TestACountOfOneIsNotPluralised(t *testing.T) {
+	for _, c := range []struct {
+		n    int
+		want string
+	}{{1, "1 round"}, {2, "2 rounds"}, {0, "0 rounds"}} {
+		out := plain(Summary{SplitName: "x", Rounds: c.n, Focus: "25m", Width: 80}.View())
+		if !strings.Contains(out, c.want) {
+			t.Errorf("with Rounds=%d the summary should say %q:\n%s", c.n, c.want, out)
 		}
 	}
 }

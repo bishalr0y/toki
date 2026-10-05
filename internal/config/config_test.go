@@ -327,28 +327,3 @@ func TestValidateRejectsUnusableTimers(t *testing.T) {
 		})
 	}
 }
-
-// History sits next to the config that describes the splits being recorded, so
-// both live where the user already looks.
-func TestHistoryLivesBesideTheConfig(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
-
-	path, err := HistoryPath()
-	if err != nil {
-		t.Fatalf("HistoryPath() = %v", err)
-	}
-
-	want := filepath.Join(tmpHome, ".config/toki/history.json")
-	if path != want {
-		t.Errorf("HistoryPath() = %q, want %q", path, want)
-	}
-
-	dir, err := Dir()
-	if err != nil {
-		t.Fatalf("Dir() = %v", err)
-	}
-	if got := filepath.Dir(path); got != dir {
-		t.Errorf("history is in %q, want it in %q alongside config.yaml", got, dir)
-	}
-}

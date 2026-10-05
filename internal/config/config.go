@@ -68,16 +68,6 @@ func Dir() (string, error) {
 	return filepath.Join(homeDir, ".config/toki"), nil
 }
 
-// HistoryPath reports where finished splits are recorded, alongside the config
-// that describes them.
-func HistoryPath() (string, error) {
-	dir, err := Dir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, "history.json"), nil
-}
-
 // Validate reports the first problem that would make the config unusable.
 //
 // Without this, a zero duration yields an instant "session completed!" and a

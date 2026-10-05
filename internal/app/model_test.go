@@ -2,6 +2,9 @@ package app
 
 import (
 	"errors"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -11,7 +14,6 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/bishalr0y/toki/internal/config"
-	"github.com/bishalr0y/toki/internal/history"
 	"github.com/bishalr0y/toki/internal/timer"
 )
 
@@ -27,34 +29,12 @@ func testConfig() config.Config {
 	}}
 }
 
-// fakeHistory stands in for the history file, so a test can assert on what was
-// recorded without touching the disk.
-type fakeHistory struct {
-	appended  []history.Entry
-	appendErr error
-
-	totals    history.Totals
-	totalsErr error
-	askedFrom time.Time
-}
-
-func (f *fakeHistory) Append(e history.Entry) error {
-	f.appended = append(f.appended, e)
-	return f.appendErr
-}
-
-func (f *fakeHistory) TotalsSince(from time.Time) (history.Totals, error) {
-	f.askedFrom = from
-	return f.totals, f.totalsErr
-}
-
-// newTestModel returns a model whose clock is frozen at start and whose
-// notifier and history are stubs, so nothing pops up on the developer's desktop
-// and no files are written.
+// newTestModel returns a model whose clock is frozen at start and whose notifier
+// is a stub, so nothing pops up on the developer's desktop.
 func newTestModel(t *testing.T) Model {
 	t.Helper()
 
-	m := New(testConfig(), &fakeHistory{})
+	m := New(testConfig())
 	m.now = func() time.Time { return start }
 	m.notify = func(string) error { return nil }
 
@@ -638,146 +618,6 @@ func walkToSummary(t *testing.T, m Model, begin time.Time) Model {
 	return m
 }
 
-// runToCompletion walks a split from the picker all the way to its summary.
-func runToCompletion(t *testing.T, m Model, begin time.Time) Model {
-	t.Helper()
-	return walkToSummary(t, m, begin)
-}
-
-// A split that ran all the way through is worth remembering. Without a record,
-// closing the terminal loses the only accounting of the session there will ever
-// be.
-func TestCompletingASplitRecordsItInHistory(t *testing.T) {
-	rec := &fakeHistory{}
-	m := newTestModel(t)
-	m.history = rec
-
-	begin := time.Date(2026, 10, 3, 9, 0, 0, 0, time.UTC)
-	m = at(press(t, m, "enter"), begin)
-
-	// Two rounds of 25 minutes, then the long break.
-	now := begin
-	for range 4 {
-		now = now.Add(40 * time.Minute)
-		m = skip(t, m, now)
-	}
-
-	if m.screen != screenSummary {
-		t.Fatalf("screen = %v, want the summary", m.screen)
-	}
-	if len(rec.appended) != 1 {
-		t.Fatalf("recorded %d entries, want 1", len(rec.appended))
-	}
-
-	got := rec.appended[0]
-	if got.Split != "Classic" {
-		t.Errorf("Split = %q, want %q", got.Split, "Classic")
-	}
-	if !got.StartedAt.Equal(begin) {
-		t.Errorf("StartedAt = %v, want %v", got.StartedAt, begin)
-	}
-	if !got.EndedAt.Equal(now) {
-		t.Errorf("EndedAt = %v, want %v", got.EndedAt, now)
-	}
-	if got.Rounds != 2 {
-		t.Errorf("Rounds = %d, want 2", got.Rounds)
-	}
-	// Two full 25 minute rounds, with the breaks in between not counting.
-	if got.Focus != 50*time.Minute {
-		t.Errorf("Focus = %v, want 50m of work", got.Focus)
-	}
-}
-
-// History holds splits you finished. Abandoning one part way through records
-// nothing, so quitting cannot quietly post a half hour of work as a session.
-func TestAbandoningASplitRecordsNothing(t *testing.T) {
-	for _, k := range []string{"esc", "q"} {
-		t.Run(k, func(t *testing.T) {
-			rec := &fakeHistory{}
-			m := newTestModel(t)
-			m.history = rec
-
-			m = at(press(t, m, "enter"), start)
-			m = at(press(t, m, "s"), start.Add(10*time.Minute))
-			// One round in, then walk away.
-			m = at(press(t, m, k), start.Add(20*time.Minute))
-
-			if len(rec.appended) != 0 {
-				t.Errorf("recorded %d entries after pressing %s, want 0: %+v",
-					len(rec.appended), k, rec.appended)
-			}
-		})
-	}
-}
-
-// History that cannot be written is reported on screen rather than discarded,
-// the same as a notification that fails to send. A user who believes a session
-// was recorded when it was not has no way to find out.
-func TestAFailureToRecordIsReported(t *testing.T) {
-	rec := &fakeHistory{appendErr: errors.New("disk full")}
-	m := newTestModel(t)
-	m.history = rec
-
-	m = runToCompletion(t, m, start)
-
-	if m.warning == "" {
-		t.Error("warning is empty after a failed Append, want it reported")
-	}
-	if !strings.Contains(m.warning, "disk full") {
-		t.Errorf("warning = %q, want it to mention the failure", m.warning)
-	}
-}
-
-// A failed append must not also stop the session being summarised: the work was
-// done whether or not it could be written down.
-func TestAFailureToRecordStillReachesTheSummary(t *testing.T) {
-	rec := &fakeHistory{appendErr: errors.New("disk full")}
-	m := newTestModel(t)
-	m.history = rec
-
-	m = runToCompletion(t, m, start)
-
-	if m.screen != screenSummary {
-		t.Errorf("screen = %v, want the summary even though the append failed", m.screen)
-	}
-}
-
-// The summary answers "what have I done today", so it totals from the start of
-// the local day rather than from the last twenty four hours.
-func TestTheSummaryTotalsFromTheStartOfTheLocalDay(t *testing.T) {
-	rec := &fakeHistory{}
-	m := newTestModel(t)
-	m.history = rec
-
-	// A local time part way through the day, so a UTC-based "start of day" would
-	// give the wrong boundary.
-	begin := time.Date(2026, 10, 3, 14, 30, 0, 0, time.FixedZone("test", 5*3600))
-	m = runToCompletion(t, m, begin)
-
-	want := time.Date(2026, 10, 3, 0, 0, 0, 0, time.FixedZone("test", 5*3600))
-	if !rec.askedFrom.Equal(want) {
-		t.Errorf("totalled from %v, want the local midnight %v", rec.askedFrom, want)
-	}
-}
-
-// A history that cannot be read must not lose the session's own total: that
-// number comes from the timer, not from the file.
-func TestAnUnreadableHistoryStillShowsTheSessionsOwnTotal(t *testing.T) {
-	rec := &fakeHistory{totalsErr: errors.New("permission denied")}
-	m := newTestModel(t)
-	m.history = rec
-
-	m = runToCompletion(t, m, start)
-
-	shown := stripANSI(m.render())
-	if !strings.Contains(shown, "50m") {
-		t.Errorf("summary does not show the session's own focus time:\n%s", shown)
-	}
-	if m.warning == "" {
-		t.Error("warning is empty when the history could not be read, want it reported")
-	}
-}
-
 // The summary has to state what was achieved, which is not the plan when phases
 // were skipped early.
 func TestTheSummaryStatesWhatWasFocusedRatherThanThePlan(t *testing.T) {
@@ -845,60 +685,6 @@ func TestThePickerShowsTheRhythmOfEachSplit(t *testing.T) {
 	shown := stripANSI(m.render())
 	if !strings.Contains(shown, "2 × 25 min") {
 		t.Errorf("picker does not show the rounds and round length:\n%s", shown)
-	}
-}
-
-// A first run has no history behind it, so an empty "today" line would be noise.
-func TestTheSummaryLeavesOutAnEmptyDayTotal(t *testing.T) {
-	rec := &fakeHistory{} // TotalsSince reports nothing finished
-	m := newTestModel(t)
-	m.history = rec
-
-	m = runToCompletion(t, m, start)
-
-	if len(rec.appended) != 1 {
-		t.Fatalf("the split itself should still be recorded, got %d entries", len(rec.appended))
-	}
-
-	shown := stripANSI(m.render())
-	if strings.Contains(shown, "today") {
-		t.Errorf("summary reports a day total of nothing:\n%s", shown)
-	}
-}
-
-// With history behind it, the summary reports the day as well as the session.
-func TestTheSummaryShowsTheDayTotalOnceThereIsOne(t *testing.T) {
-	rec := &fakeHistory{totals: history.Totals{Splits: 3, Focus: 4 * time.Hour}}
-	m := newTestModel(t)
-	m.history = rec
-
-	m = runToCompletion(t, m, start)
-
-	shown := stripANSI(m.render())
-	for _, want := range []string{"today", "3 splits", "4h"} {
-		if !strings.Contains(shown, want) {
-			t.Errorf("summary is missing %q:\n%s", want, shown)
-		}
-	}
-}
-
-// "1 splits" is the kind of detail that makes a summary look unfinished.
-func TestTheDayTotalIsCountedInTheRightNumber(t *testing.T) {
-	for _, c := range []struct {
-		splits int
-		want   string
-	}{
-		{1, "1 split"},
-		{2, "2 splits"},
-	} {
-		rec := &fakeHistory{totals: history.Totals{Splits: c.splits, Focus: time.Hour}}
-		m := newTestModel(t)
-		m.history = rec
-		m = runToCompletion(t, m, start)
-
-		if shown := stripANSI(m.render()); !strings.Contains(shown, c.want) {
-			t.Errorf("with %d splits the summary should say %q:\n%s", c.splits, c.want, shown)
-		}
 	}
 }
 
@@ -1083,4 +869,67 @@ func squeeze(s string) string {
 		}
 		return r
 	}, s)
+}
+
+// Finishing a split must leave nothing behind on disk.
+//
+// toki used to append every finished split to ~/.config/toki/history.json. That
+// file was the only thing it ever wrote, so removing it makes the program write
+// nothing at all — which is the property worth pinning, because it is the one
+// that cannot be undone later. A user who finds toki has been leaving a record of
+// every working minute on their machine has no way to undo the finding.
+//
+// The check walks the whole temp home rather than looking for one filename. A test
+// that looked for history.json specifically would keep passing if the file were
+// renamed, or if a second file appeared beside it.
+//
+// It runs against the real store, wired the way main wires it, because a fake
+// writes nothing by construction: a fake would pass whether or not the program
+// records anything, which is the whole question here.
+func TestFinishingASplitLeavesNothingOnDisk(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	// The config directory is created up front, so "wrote nothing" cannot be
+	// satisfied by having had nowhere to write in the first place.
+	dir, err := config.Dir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	m := New(testConfig())
+	m.now = func() time.Time { return start }
+	m.notify = func(string) error { return nil }
+
+	m = at(press(t, m, "enter"), start)
+	now := start
+	for range 4 {
+		now = now.Add(40 * time.Minute)
+		m = skip(t, m, now)
+	}
+
+	if m.screen != screenSummary {
+		t.Fatalf("screen = %v, want the summary, so the split never finished", m.screen)
+	}
+
+	var found []string
+	err = filepath.WalkDir(home, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() {
+			found = append(found, path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walking %s: %v", home, err)
+	}
+
+	if len(found) != 0 {
+		t.Errorf("finishing a split wrote %d file(s): %v", len(found), found)
+	}
 }

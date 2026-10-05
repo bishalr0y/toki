@@ -10,7 +10,6 @@ A Pomodoro timer for the terminal.
 - Pause, resume and skip phases without stopping
 - Countdown that tracks the wall clock, so it stays accurate across a suspend
 - A summary of what you actually focused, not what the plan called for
-- Finished splits recorded in plain JSON, with today's running total
 - Configurable splits via YAML
 - Desktop notifications per phase, with failures reported on screen
 - Live progress bar, and colour that respects the terminal's own palette
@@ -87,28 +86,17 @@ timers:
 ```
 
 So the split above runs focus, break, focus, break, focus, break, focus, long
-break — and is then finished, with a summary and a line in the history.
+break — and is then finished, with a summary of what you actually worked.
 
-## History
+## What it keeps
 
-Splits you finish are appended to `~/.config/toki/history.json`, next to the
-config. It is plain JSON on purpose: readable, editable, and deletable without
-this program.
+Nothing. `config.yaml` is read at startup — and written only if it does not
+exist yet — and toki creates no other files. A finished split is summarised on
+screen and then forgotten, so there is no record on your machine of when you
+worked or for how long.
 
-```json
-[
-  {
-    "split": "Standard",
-    "startedAt": "2026-10-03T09:00:00Z",
-    "endedAt": "2026-10-03T11:10:00Z",
-    "focusSeconds": 5700,
-    "rounds": 4
-  }
-]
-```
-
-`focusSeconds` counts time actually spent working, so it excludes breaks and
-time spent paused. Abandoning a split records nothing.
+If you want that record kept, it belongs to something built to keep it: a
+calendar, a time tracker, whatever you already use to account for your week.
 
 ## Development
 

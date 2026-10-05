@@ -11,7 +11,6 @@ import (
 
 	"github.com/bishalr0y/toki/internal/app"
 	"github.com/bishalr0y/toki/internal/config"
-	"github.com/bishalr0y/toki/internal/history"
 )
 
 // version is overridden at build time with:
@@ -108,12 +107,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 
-	histPath, err := config.HistoryPath()
-	if err != nil {
-		return err
-	}
-
-	return app.Run(cfg, history.NewStore(histPath))
+	return app.Run(cfg)
 }
 
 // list prints the configured splits and exits.

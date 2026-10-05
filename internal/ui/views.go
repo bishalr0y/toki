@@ -229,16 +229,14 @@ type Summary struct {
 	// skipped early means less time was focused than the split calls for.
 	Rounds int
 	Focus  string
-	// Today is the running total for the day, blank when there is none to report.
-	Today string
 
 	// Sent and Failed count the desktop notifications that were actually
 	// attempted, so a session ended by skipping them does not claim they failed.
 	Sent   int
 	Failed int
 
-	// Warning reports anything that went wrong on the way here, such as history
-	// that could not be written.
+	// Warning reports anything that went wrong on the way here, such as a
+	// notification that could not be delivered.
 	Warning string
 
 	Width int
@@ -256,9 +254,6 @@ func (s Summary) View() string {
 			s.Rounds, Plural(s.Rounds, "round", "rounds"), s.Focus)),
 	}
 
-	if s.Today != "" {
-		body = append(body, Subtle.Render(s.Today))
-	}
 	if notice := s.notice(); notice != "" {
 		body = append(body, "", notice)
 	}
@@ -282,10 +277,8 @@ func (s Summary) notice() string {
 	}
 }
 
-// Plural picks between a singular and a plural noun for a count.
-//
-// Exported because both the summary and the day's running total count things, and
-// "1 splits" is the sort of detail that makes a screen look unfinished.
+// Plural picks between a singular and a plural noun for a count, because "1 rounds"
+// is the sort of detail that makes a screen look unfinished.
 func Plural(n int, one, many string) string {
 	if n == 1 {
 		return one
