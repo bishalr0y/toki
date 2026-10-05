@@ -82,6 +82,9 @@ type Timer struct {
 	// whether the next break is the long one.
 	rounds int
 
+	// focused accumulates time spent in finished focus rounds, pauses excluded.
+	focused time.Duration
+
 	started bool
 
 	paused          bool
@@ -159,6 +162,20 @@ func (t Timer) Remaining(now time.Time) time.Duration {
 	return 0
 }
 
+// Focused reports how much time has actually been spent working across every
+// focus round so far, the one running included.
+//
+// It is not the same as how long the session has been open: time spent in a
+// break, and time away from the keyboard while paused, is not work. A round
+// skipped partway through only counts for the minutes it ran for.
+func (t Timer) Focused(now time.Time) time.Duration {
+	total := t.focused
+	if t.phase == PhaseFocus {
+		total += max(t.split.Focus-t.Remaining(now), 0)
+	}
+	return total
+}
+
 // Progress reports how far through the current phase the timer is, from 0 to 1.
 //
 // It stays frozen while paused, restarts from zero for each phase, and reads 1
@@ -221,6 +238,9 @@ func NextTick(now time.Time) time.Duration {
 func (t *Timer) Skip(now time.Time) {
 	switch t.phase {
 	case PhaseFocus:
+		// Bank the round's work before moving on, while the remaining time still
+		// describes the round that just ended.
+		t.focused += max(t.split.Focus-t.Remaining(now), 0)
 		t.rounds++
 		t.phase = t.nextBreak()
 		t.deadline = now.Add(t.split.durationFor(t.phase))

@@ -278,6 +278,66 @@ func TestASplitWithNoCyclesStillEnds(t *testing.T) {
 // The zero Timer is not running anything. Without Started, an unstarted timer
 // reports Finished because it has no phase, which reads as "your session
 // ended" before it ever began.
+// "Total focus time" has to mean time actually spent working, not time on the
+// clock. A paused timer is not work, and a round skipped partway through is only
+// worth the minutes it ran for.
+func TestFocusedCountsTheTimeActuallySpentWorking(t *testing.T) {
+	tr := New(standardSplit(), start)
+
+	if got := tr.Focused(start); got != 0 {
+		t.Errorf("Focused at the start = %v, want 0", got)
+	}
+	if got, want := tr.Focused(start.Add(10*time.Minute)), 10*time.Minute; got != want {
+		t.Errorf("Focused ten minutes in = %v, want %v", got, want)
+	}
+
+	// Skipped at the twenty minute mark, so twenty minutes were worked.
+	tr.Skip(start.Add(20 * time.Minute))
+	if got, want := tr.Focused(start.Add(20*time.Minute)), 20*time.Minute; got != want {
+		t.Errorf("Focused after skipping late = %v, want %v", got, want)
+	}
+
+	// Through a break and a second full round: 20m + 25m.
+	tr.Skip(start.Add(25 * time.Minute))
+	tr.Skip(start.Add(30*time.Minute + 25*time.Minute))
+	if got, want := tr.Focused(start.Add(55*time.Minute)), 45*time.Minute; got != want {
+		t.Errorf("Focused after two rounds = %v, want %v", got, want)
+	}
+}
+
+// A pause is time away from the keyboard, so it must not inflate the total.
+func TestFocusedExcludesPausedTime(t *testing.T) {
+	tr := New(standardSplit(), start)
+
+	// Ten minutes in, an hour away, then straight on to the end of the round.
+	tr.Pause(start.Add(10 * time.Minute))
+	tr.Resume(start.Add(70 * time.Minute))
+	tr.Skip(start.Add(95 * time.Minute))
+
+	if got, want := tr.Focused(start.Add(95*time.Minute)), 25*time.Minute; got != want {
+		t.Errorf("Focused across a pause = %v, want %v; the hour away is not work", got, want)
+	}
+}
+
+// A timer held in a pause has still done the work it did before the pause.
+func TestFocusedCountsWorkDoneBeforeAPause(t *testing.T) {
+	tr := New(standardSplit(), start)
+	tr.Pause(start.Add(10 * time.Minute))
+
+	if got, want := tr.Focused(start.Add(90*time.Minute)), 10*time.Minute; got != want {
+		t.Errorf("Focused while paused = %v, want %v", got, want)
+	}
+}
+
+// An unstarted timer has done nothing yet.
+func TestAnUnstartedTimerHasFocusedForNoTime(t *testing.T) {
+	var tr Timer
+
+	if got := tr.Focused(start.Add(time.Hour)); got != 0 {
+		t.Errorf("Focused on the zero Timer = %v, want 0", got)
+	}
+}
+
 func TestAnUnstartedTimerIsNeitherRunningNorFinished(t *testing.T) {
 	var tr Timer
 
