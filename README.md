@@ -113,5 +113,4 @@ just run     # Build and run
 
 ## TODO
 
-- [ ] Command line flags so `toki --focus 50` works without the picker
 - [ ] Resume a split after an unexpected termination
