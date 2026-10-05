@@ -8,21 +8,55 @@ import (
 	"strings"
 
 	"charm.land/lipgloss/v2"
+
+	"github.com/bishalr0y/toki/internal/timer"
 )
 
-// Accent colours, carried over unchanged from the pre-Bubble Tea ui/colors.go
-// so the existing look survives the rewrite.
-var (
-	Blue  = lipgloss.Color("#8AADF4")
-	Red   = lipgloss.Color("#ED8796")
-	Green = lipgloss.Color("#A6DA95")
-	Mauve = lipgloss.Color("#CA9AE6")
-	Peach = lipgloss.Color("#EF9F76")
+// The sixteen colours every terminal provides, and nothing else.
+//
+// Nothing here is a fixed RGB value on purpose. A hex code has to guess what your
+// terminal's background is, and it guesses wrong the moment that background is not
+// the one it was designed against — unreadable text on a light theme, or a bar that
+// disappears into a dark one. An ANSI colour is a request for "whatever you use for
+// bright red", which every terminal already has an answer for and every theme has
+// tuned. So toki looks the same on a light background, a dark one and a solarized
+// one, because in every case the terminal decides.
+//
+// The values are the bright half of the palette where one is wanted, since these
+// are accents against a background we do not know.
+const (
+	ansiBlack   = "0"
+	ansiRed     = "9"
+	ansiGreen   = "10"
+	ansiYellow  = "11"
+	ansiBlue    = "12"
+	ansiMagenta = "13"
+	// Bright black is the colour terminals conventionally use for dimmed text, so
+	// it is the one to reach for when something should be quieter than the rest.
+	ansiDim = "8"
+)
 
-	// Neutrals, chosen to sit quietly behind the accents above.
-	Text  = lipgloss.Color("#4C4F69")
-	Muted = lipgloss.Color("#8C8FA1")
-	Base  = lipgloss.Color("#EFF1F5")
+var (
+	Blue  = lipgloss.Color(ansiBlue)
+	Red   = lipgloss.Color(ansiRed)
+	Green = lipgloss.Color(ansiGreen)
+	Mauve = lipgloss.Color(ansiMagenta)
+	Peach = lipgloss.Color(ansiYellow)
+
+	// Text is deliberately left unset, which is what makes the body of the interface
+	// inherit the terminal's own foreground. That is the one colour guaranteed to
+	// contrast with its own background, whatever the theme, and asking for anything
+	// specific would only throw that guarantee away.
+	Text = lipgloss.Color("")
+
+	// Muted is the terminals' dimmed colour, for the lines that carry less weight
+	// than the text around them.
+	Muted = lipgloss.Color(ansiDim)
+
+	// Base is painted on top of Peach for the highlighted row. Black is the only
+	// safe choice there: themes put light colours in the bright half of the
+	// palette, so black on a bright bar reads on every one of them.
+	Base = lipgloss.Color(ansiBlack)
 )
 
 // Styles shared across screens.
@@ -79,11 +113,21 @@ func Title() string { return TitleStyle.Render(Banner) }
 //
 // Pausing is reported on its own line rather than by replacing this, so the
 // phase is still readable while the countdown is held.
-func LabelFor(phase string) string {
-	if phase == "BREAK" {
-		return BreakLabel.Render(phase)
+//
+// The phase arrives as a timer.Phase rather than a string on purpose. Matching on
+// the text meant each screen had to remember the full list of rest phases, and a
+// long break came out in the focus colour while its bar came out in the break one.
+func LabelFor(phase timer.Phase) string {
+	if isRest(phase) {
+		return BreakLabel.Render(phase.String())
 	}
-	return FocusLabel.Render(phase)
+	return FocusLabel.Render(phase.String())
+}
+
+// isRest says whether a phase is a rest rather than work. Every screen that needs to
+// know asks here, so the label and the bar cannot disagree about a phase.
+func isRest(phase timer.Phase) bool {
+	return phase == timer.PhaseBreak || phase == timer.PhaseLongBreak
 }
 
 // Bar renders a progress bar of the given width, filled to fraction in [0,1].
