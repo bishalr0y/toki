@@ -6,24 +6,24 @@
 package sound
 
 import (
+	_ "embed"
 	"os"
 	"os/exec"
 	"path/filepath"
 )
 
-// Names lists the filenames toki looks for, in the order they are preferred.
-// The first one that exists in the config directory is the completion sound, so
-// a user who drops in more than one can predict which will play.
-var Names = []string{
-	"complete.wav",
-	"complete.mp3",
-	"complete.ogg",
-	"complete.m4a",
-	"complete.flac",
-	"toki.wav",
-	"toki.mp3",
-	"toki.ogg",
-}
+// Name is the one filename toki looks for in the config directory. A single
+// fixed name means there is no precedence to learn and nothing to guess.
+const Name = "sound.wav"
+
+//go:embed default.wav
+var defaultSound []byte
+
+// Default returns the built-in completion sound, a short chime embedded in the
+// binary so a fresh install makes a sound without the user finding one. It is
+// written to the config directory when the default config is created, and only
+// then, so deleting it turns the sound off for good.
+func Default() []byte { return defaultSound }
 
 // player is one way to play a file on some systems.
 type player struct {
@@ -67,13 +67,11 @@ var (
 )
 
 // Find returns the path of the completion sound in dir, and whether one exists.
-// A directory that happens to share a sound's name is not a sound.
+// A directory that happens to share the sound's name is not a sound.
 func Find(dir string) (string, bool) {
-	for _, name := range Names {
-		path := filepath.Join(dir, name)
-		if info, err := os.Stat(path); err == nil && !info.IsDir() {
-			return path, true
-		}
+	path := filepath.Join(dir, Name)
+	if info, err := os.Stat(path); err == nil && !info.IsDir() {
+		return path, true
 	}
 	return "", false
 }

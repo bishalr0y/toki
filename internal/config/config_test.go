@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/bishalr0y/toki/internal/sound"
 )
 
 func TestReadDefaultConfig(t *testing.T) {
@@ -46,6 +48,78 @@ func TestReadConfig_CreatesDefault(t *testing.T) {
 	configPath := filepath.Join(tmpHome, ".config/toki/config.yaml")
 	if _, err := os.Stat(configPath); err != nil {
 		t.Errorf("expected config file to be created at %s: %v", configPath, err)
+	}
+}
+
+// A fresh install should make a sound without the user finding one, so the
+// default config and the default completion sound are created together.
+func TestReadConfigShipsACompletionSoundOnFirstRun(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	if _, err := ReadConfig(); err != nil {
+		t.Fatalf("ReadConfig() returned error: %v", err)
+	}
+
+	path := filepath.Join(tmpHome, ".config/toki", sound.Name)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("expected a completion sound at %s: %v", path, err)
+	}
+	if len(data) < 12 || string(data[0:4]) != "RIFF" || string(data[8:12]) != "WAVE" {
+		t.Errorf("the shipped completion sound is not a WAV file")
+	}
+}
+
+// A sound the user put there themselves must survive: the built-in one is only
+// ever created, never written over.
+func TestAnExistingCompletionSoundIsNotOverwritten(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	dir := filepath.Join(tmpHome, ".config/toki")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mine := []byte("my own sound")
+	if err := os.WriteFile(filepath.Join(dir, sound.Name), mine, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := ReadConfig(); err != nil {
+		t.Fatalf("ReadConfig() returned error: %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(dir, sound.Name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(mine) {
+		t.Errorf("the completion sound was overwritten: got %d bytes, want %d", len(got), len(mine))
+	}
+}
+
+// Deleting the sound is how a user turns it off, so an existing config must not
+// bring it back on every run.
+func TestTheCompletionSoundIsNotRestoredOnceTheConfigExists(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	dir := filepath.Join(tmpHome, ".config/toki")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := "timers:\n  - name: Mine\n    focus: 25\n    break: 5\n"
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := ReadConfig(); err != nil {
+		t.Fatalf("ReadConfig() returned error: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(dir, sound.Name)); !os.IsNotExist(err) {
+		t.Errorf("a completion sound appeared even though the config already existed (err=%v)", err)
 	}
 }
 

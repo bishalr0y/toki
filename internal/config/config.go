@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/bishalr0y/toki/internal/sound"
+
 	"go.yaml.in/yaml/v3"
 )
 
@@ -136,6 +138,8 @@ func ReadConfig() (Config, error) {
 			return Config{}, fmt.Errorf("failed to write default config: %w", err)
 		}
 
+		writeDefaultSound(configPath)
+
 		return defaultConfig, defaultConfig.Validate()
 	}
 
@@ -153,6 +157,26 @@ func ReadConfig() (Config, error) {
 	}
 
 	return config.withDefaults(), nil
+}
+
+// writeDefaultSound drops the built-in completion sound beside a config that was
+// just created, so a fresh install is not silent.
+//
+// It is only called on that first run, and never overwrites: an existing file
+// wins, which is what makes deleting the sound a way to turn it off for good
+// instead of having it reappear on the next launch.
+func writeDefaultSound(dir string) {
+	path := filepath.Join(dir, sound.Name)
+
+	// O_EXCL is the "never overwrite" part: if the user already has a sound
+	// there, this fails and we leave theirs alone.
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		return
+	}
+	defer func() { _ = file.Close() }()
+
+	_, _ = file.Write(sound.Default())
 }
 
 func ReadDefaultConfig() (Config, error) {

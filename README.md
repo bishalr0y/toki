@@ -11,7 +11,7 @@ A Pomodoro timer for the terminal.
 - Countdown that tracks the wall clock, so it stays accurate across a suspend
 - A summary of what you actually focused, not what the plan called for
 - Configurable splits via YAML
-- A completion sound per phase, from a file you drop in the config directory
+- A completion sound per phase, on by default but easy to swap or delete
 - Live progress bar, and colour that respects the terminal's own palette
 
 ## Installation
@@ -90,17 +90,17 @@ break — and is then finished, with a summary of what you actually worked.
 
 ## Completion sound
 
-toki can play a sound each time a phase ends. Put a file in the config
-directory and it will be used; there is nothing to configure:
+toki plays a short chime each time a phase ends, so a fresh install is not
+silent. The sound ships in the binary and is written to your config directory the
+first time toki runs:
 
-```bash
-cp my-sound.wav ~/.config/toki/complete.wav
+```
+~/.config/toki/sound.wav
 ```
 
-`complete.wav`, `complete.mp3`, `complete.ogg`, `complete.m4a` and
-`complete.flac` are all recognised, as are the same names beginning with `toki`
-(`toki.wav`, `toki.mp3`, `toki.ogg`). If more than one is present the first in
-that order wins.
+It is one fixed name; there is no list to remember and nothing to configure. To
+use your own sound, replace that file — any `.wav` you drop in its place is
+played. To turn the sound off, delete the file; toki will not put it back.
 
 Playback is best-effort. toki hands the file to whichever player is installed —
 `afplay` on macOS, `paplay`/`aplay`/`pw-play` on Linux, and so on — and it never
@@ -109,13 +109,16 @@ phase simply passes in silence; toki will not nag you about it.
 
 ## What it keeps
 
-Nothing. `config.yaml` is read at startup — and written only if it does not
-exist yet — and toki creates no other files. A finished split is summarised on
+Nothing about your work. toki keeps no history: a finished split is summarised on
 screen and then forgotten, so there is no record on your machine of when you
 worked or for how long.
 
-If you want that record kept, it belongs to something built to keep it: a
-calendar, a time tracker, whatever you already use to account for your week.
+The only files it writes are its own setup, and only on the first run, when
+neither exists yet: `config.yaml` and the default `sound.wav`. After that toki
+reads them and leaves them alone — delete either one and it stays deleted.
+
+If you want a record of your work kept, it belongs to something built to keep it:
+a calendar, a time tracker, whatever you already use to account for your week.
 
 ## Development
 

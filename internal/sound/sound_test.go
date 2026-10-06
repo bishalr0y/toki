@@ -46,48 +46,56 @@ func touch(t *testing.T, dir, name string) {
 	}
 }
 
-// A completion sound can be any of a few names; the one listed first wins, so a
-// user can drop in several and know which will play without guessing.
-func TestFindPrefersTheFirstNameInTheList(t *testing.T) {
+// The default sound is embedded in the binary so a fresh install is not silent.
+func TestDefaultIsAValidWAV(t *testing.T) {
+	data := Default()
+	if len(data) < 44 {
+		t.Fatalf("default sound is %d bytes, too small to be a WAV", len(data))
+	}
+	if string(data[0:4]) != "RIFF" || string(data[8:12]) != "WAVE" {
+		t.Errorf("default sound is not a RIFF/WAVE file: %q", data[:12])
+	}
+}
+
+// The completion sound has exactly one name, so there is nothing to choose
+// between and nothing to remember.
+func TestFindReturnsTheCompletionSound(t *testing.T) {
+	dir := t.TempDir()
+	touch(t, dir, Name)
+
+	got, ok := Find(dir)
+	if !ok {
+		t.Fatalf("Find found no sound, want %s", Name)
+	}
+	if want := filepath.Join(dir, Name); got != want {
+		t.Errorf("Find = %q, want %q", got, want)
+	}
+}
+
+// Other audio files sitting in the config directory are not the completion
+// sound; only the one name counts.
+func TestFindIgnoresEveryOtherName(t *testing.T) {
 	dir := t.TempDir()
 	touch(t, dir, "toki.mp3")
-	touch(t, dir, "complete.wav")
+	touch(t, dir, "complete.ogg")
+	touch(t, dir, "chime.wav")
 
-	got, ok := Find(dir)
-	if !ok {
-		t.Fatal("Find found no sound, want complete.wav")
-	}
-	if want := filepath.Join(dir, "complete.wav"); got != want {
-		t.Errorf("Find = %q, want %q", got, want)
+	if got, ok := Find(dir); ok {
+		t.Errorf("Find = %q, true; want only %s to count", got, Name)
 	}
 }
 
-func TestFindReturnsTheOnlySoundThereIs(t *testing.T) {
-	dir := t.TempDir()
-	touch(t, dir, "toki.ogg")
-
-	got, ok := Find(dir)
-	if !ok {
-		t.Fatal("Find found no sound, want toki.ogg")
-	}
-	if want := filepath.Join(dir, "toki.ogg"); got != want {
-		t.Errorf("Find = %q, want %q", got, want)
-	}
-}
-
-// The absence of a sound is the normal case: nobody owes toki a file, and
-// nothing should be reported when there is none.
 func TestFindReportsNoSoundInAnEmptyDirectory(t *testing.T) {
 	if got, ok := Find(t.TempDir()); ok {
 		t.Errorf("Find = %q, true; want no sound at all", got)
 	}
 }
 
-// A directory named complete.wav is not a sound, and trying to play it would
+// A directory named like the sound is not a sound, and trying to play it would
 // hand a directory to the player and fail.
-func TestFindIgnoresADirectoryNamedLikeASound(t *testing.T) {
+func TestFindIgnoresADirectoryNamedLikeTheSound(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.Mkdir(filepath.Join(dir, "complete.wav"), 0o755); err != nil {
+	if err := os.Mkdir(filepath.Join(dir, Name), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -99,7 +107,7 @@ func TestFindIgnoresADirectoryNamedLikeASound(t *testing.T) {
 // Play must run whichever player is actually installed, and pass it the sound.
 func TestPlayRunsTheFirstAvailablePlayerWithTheSound(t *testing.T) {
 	dir := t.TempDir()
-	touch(t, dir, "complete.wav")
+	touch(t, dir, Name)
 
 	s := &stub{available: map[string]bool{"aplay": true, "mpv": true}}
 	s.install(t)
@@ -112,7 +120,7 @@ func TestPlayRunsTheFirstAvailablePlayerWithTheSound(t *testing.T) {
 	if s.ran[0] != "aplay" {
 		t.Errorf("ran %q, want aplay, the first available player", s.ran[0])
 	}
-	if len(s.ranArgs[0]) == 0 || s.ranArgs[0][len(s.ranArgs[0])-1] != filepath.Join(dir, "complete.wav") {
+	if len(s.ranArgs[0]) == 0 || s.ranArgs[0][len(s.ranArgs[0])-1] != filepath.Join(dir, Name) {
 		t.Errorf("args = %v, want the sound path last", s.ranArgs[0])
 	}
 }
@@ -132,7 +140,7 @@ func TestPlayStaysSilentWithoutASound(t *testing.T) {
 // A sound but no player on a minimal system is not an error worth surfacing.
 func TestPlayStaysSilentWithoutAPlayer(t *testing.T) {
 	dir := t.TempDir()
-	touch(t, dir, "complete.wav")
+	touch(t, dir, Name)
 
 	s := &stub{available: map[string]bool{}}
 	s.install(t)
@@ -148,7 +156,7 @@ func TestPlayStaysSilentWithoutAPlayer(t *testing.T) {
 // failure is swallowed and the timer carries on.
 func TestPlaySwallowsAFailingPlayer(t *testing.T) {
 	dir := t.TempDir()
-	touch(t, dir, "complete.wav")
+	touch(t, dir, Name)
 
 	s := &stub{available: map[string]bool{"afplay": true}, fail: true}
 	s.install(t)
