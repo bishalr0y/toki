@@ -14,7 +14,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/bishalr0y/toki/internal/config"
-	"github.com/bishalr0y/toki/internal/notify"
+	"github.com/bishalr0y/toki/internal/sound"
 	"github.com/bishalr0y/toki/internal/timer"
 	"github.com/bishalr0y/toki/internal/ui"
 )
@@ -33,12 +33,10 @@ const (
 // inside Update, so tests can drive time deliberately.
 type tickMsg time.Time
 
-// notifyMsg reports the outcome of a desktop notification. Sending it is a
-// tea.Cmd, so a slow or hanging notifier cannot freeze the interface.
-type notifyMsg struct {
-	phase timer.Phase
-	err   error
-}
+// soundPlayedMsg reports that a completion sound was attempted. It carries no
+// outcome — playback is best-effort — but routing it back through Update keeps
+// the sound tied to the update loop rather than firing off on its own.
+type soundPlayedMsg struct{}
 
 // Model is the entire application state.
 type Model struct {
@@ -55,23 +53,15 @@ type Model struct {
 	focused time.Duration
 	rounds  int
 
-	// sent and failed count the notifications actually attempted, so the
-	// summary can report on them without claiming a failure that never happened.
-	sent   int
-	failed int
-
-	warning string
-
 	width  int
 	height int
-
-	// notify is indirected so tests can exercise the notification path without
-	// firing real desktop notifications.
-	notify func(string) error
 
 	// now is indirected so tests can anchor a session to a fixed instant
 	// instead of the wall clock.
 	now func() time.Time
+	// play is how a finished phase announces itself, indirected so tests do not
+	// reach for the speakers and so a machine with no sound stays quiet.
+	play func()
 }
 
 // New builds the initial model for a set of configured splits.
@@ -83,9 +73,22 @@ func New(cfg config.Config) Model {
 		// WindowSizeMsg arrives, is not degenerate.
 		width:  80,
 		height: 24,
-		notify: notify.Notify,
 		now:    time.Now,
+		play:   playCompletionSound,
 	}
+}
+
+// playCompletionSound plays the user's completion sound, if they have one.
+//
+// The config directory is resolved here rather than once at construction so the
+// sound is picked up per play, and a machine whose home directory cannot be
+// found is simply silent rather than an error anyone has to handle.
+func playCompletionSound() {
+	dir, err := config.Dir()
+	if err != nil {
+		return
+	}
+	sound.Play(dir)
 }
 
 // Init satisfies tea.Model. Nothing needs to happen before the first message.
@@ -100,9 +103,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tickMsg:
 		return m.onTick(time.Time(msg))
-
-	case notifyMsg:
-		return m.onNotify(msg), nil
 
 	case tea.KeyPressMsg:
 		return m.onKey(msg.String(), m.now())
@@ -121,12 +121,13 @@ func (m Model) onTick(now time.Time) (tea.Model, tea.Cmd) {
 		return m, m.tickCmd(now)
 	}
 
-	// One notification per phase that ended, which may be more than one if the
-	// process was suspended across a boundary.
+	// One sound per phase that ended, which may be more than one if the process
+	// was suspended across a boundary. Playback is best-effort and never blocks
+	// the timer.
 	ended := m.timer.Advance(now)
 	cmds := make([]tea.Cmd, 0, len(ended)+1)
-	for _, phase := range ended {
-		cmds = append(cmds, m.notifyCmd(phase))
+	for range ended {
+		cmds = append(cmds, m.playSoundCmd())
 	}
 
 	if m.timer.Finished() {
@@ -149,18 +150,6 @@ func (m Model) complete(now time.Time) Model {
 	m.rounds = m.timer.Rounds()
 	m.screen = screenSummary
 
-	return m
-}
-
-func (m Model) onNotify(msg notifyMsg) Model {
-	if msg.err != nil {
-		m.failed++
-		m.warning = fmt.Sprintf("desktop notification failed: %v", msg.err)
-		return m
-	}
-
-	m.sent++
-	m.warning = ""
 	return m
 }
 
@@ -239,8 +228,6 @@ func (m Model) start(now time.Time) (tea.Model, tea.Cmd) {
 	m.timer = timer.New(m.split, now)
 	m.focused, m.rounds = 0, 0
 	m.screen = screenSession
-	m.warning = ""
-	m.sent, m.failed = 0, 0
 
 	return m, m.tickCmd(now)
 }
@@ -270,18 +257,6 @@ func (m Model) tickCmd(now time.Time) tea.Cmd {
 	return tea.Tick(timer.NextTick(now), func(t time.Time) tea.Msg {
 		return tickMsg(t)
 	})
-}
-
-// notifyCmd sends a desktop notification off the update loop, so a slow or
-// hanging notifier cannot freeze the interface, and reports the outcome back as
-// a message. Failures are surfaced on screen rather than discarded.
-func (m Model) notifyCmd(phase timer.Phase) tea.Cmd {
-	send := m.notify
-	name := phase.String()
-
-	return func() tea.Msg {
-		return notifyMsg{phase: phase, err: send(name)}
-	}
 }
 
 // View satisfies tea.Model.
@@ -319,7 +294,6 @@ func (m Model) render() string {
 			Remaining:   timer.Format(m.timer.Remaining(m.now())),
 			ElapsedFrac: m.timer.Progress(m.now()),
 			BarWidth:    m.barWidth(),
-			Warning:     m.warning,
 			Width:       m.width,
 		}.View()
 		help = ui.Help(m.width,
@@ -334,9 +308,6 @@ func (m Model) render() string {
 			SplitName: m.name,
 			Rounds:    m.rounds,
 			Focus:     timer.FormatTotal(m.focused),
-			Sent:      m.sent,
-			Failed:    m.failed,
-			Warning:   m.warning,
 			Width:     m.width,
 		}.View()
 		help = ui.Help(m.width, [2]string{"enter", "back"}, [2]string{"q", "quit"})
@@ -354,10 +325,9 @@ func (m Model) render() string {
 
 	// The height is checked against what was just drawn rather than against a
 	// constant, because only the drawn screen knows how tall it turned out to be:
-	// the picker grows by a row per split, and a long warning adds rows to whichever
-	// screen it appears on. A constant floor would either clip the split that pushes
-	// it over or refuse a window that happens to be roomy enough, and both would make
-	// the "have X by Y" in the complaint a lie.
+	// the picker grows by a row per split. A constant floor would either clip the
+	// split that pushes it over or refuse a window that happens to be roomy enough,
+	// and both would make the "have X by Y" in the complaint a lie.
 	if rows := strings.Count(out, "\n") + 1; rows > m.height {
 		return ui.TooSmallTall(m.width, m.height, rows)
 	}
@@ -374,6 +344,20 @@ func (m Model) render() string {
 // letting it run the full width.
 func (m Model) barWidth() int {
 	return min(44, max(m.width-10, 4))
+}
+
+// playSoundCmd plays the completion sound off the update loop, so a player that
+// takes a moment to start cannot hold up the countdown.
+//
+// It reports an outcome rather than playing silently in the command, because that
+// keeps the side effect inside the update loop: a test can run the commands an
+// update asked for and count how many sounds a phase boundary produced.
+func (m Model) playSoundCmd() tea.Cmd {
+	play := m.play
+	return func() tea.Msg {
+		play()
+		return soundPlayedMsg{}
+	}
 }
 
 // roundLabel says which focus round is running, out of how many the split runs.

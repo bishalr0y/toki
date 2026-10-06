@@ -1,11 +1,9 @@
 package app
 
 import (
-	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -29,14 +27,14 @@ func testConfig() config.Config {
 	}}
 }
 
-// newTestModel returns a model whose clock is frozen at start and whose notifier
-// is a stub, so nothing pops up on the developer's desktop.
+// newTestModel returns a model whose clock is frozen at start and whose sound is
+// a no-op, so a session ending does not reach for the developer's speakers.
 func newTestModel(t *testing.T) Model {
 	t.Helper()
 
 	m := New(testConfig())
 	m.now = func() time.Time { return start }
-	m.notify = func(string) error { return nil }
+	m.play = func() {}
 
 	return m
 }
@@ -276,11 +274,10 @@ func TestEscapeGoesBackToThePicker(t *testing.T) {
 }
 
 // Leaving and starting again must begin a clean session, with the full focus
-// duration and no warning left over from the abandoned one.
+// duration.
 func TestStartingAgainAfterLeavingCarriesNoStaleState(t *testing.T) {
 	m := press(t, newTestModel(t), "enter")
 	m = press(t, m, "s") // into the break
-	m = send(t, m, notifyMsg{phase: timer.PhaseFocus, err: errors.New("boom")})
 	m = press(t, m, "esc")
 
 	m = press(t, at(m, start.Add(3*time.Hour)), "enter")
@@ -294,9 +291,6 @@ func TestStartingAgainAfterLeavingCarriesNoStaleState(t *testing.T) {
 	if got, want := m.timer.Remaining(start.Add(3*time.Hour)), 25*time.Minute; got != want {
 		t.Errorf("Remaining = %v, want the full %v", got, want)
 	}
-	if m.warning != "" {
-		t.Errorf("warning = %q, want it cleared for the new session", m.warning)
-	}
 }
 
 func TestTheSummaryGoesBackToThePicker(t *testing.T) {
@@ -309,7 +303,7 @@ func TestTheSummaryGoesBackToThePicker(t *testing.T) {
 	}
 }
 
-func TestAPhaseThatRunsOutNotifiesAndAdvances(t *testing.T) {
+func TestAPhaseThatRunsOutPlaysASoundAndAdvances(t *testing.T) {
 	m := press(t, newTestModel(t), "enter")
 
 	// One second past the focus deadline.
@@ -318,8 +312,24 @@ func TestAPhaseThatRunsOutNotifiesAndAdvances(t *testing.T) {
 	if m.timer.Phase() != timer.PhaseBreak {
 		t.Errorf("phase = %v, want break", m.timer.Phase())
 	}
-	if got, want := reported(cmd), []string{"FOCUS"}; !equal(got, want) {
-		t.Errorf("notified %v, want %v", got, want)
+	if got := soundsPlayed(cmd); got != 1 {
+		t.Errorf("played %d sounds, want 1 for the phase that ran out", got)
+	}
+}
+
+// A model built the way the program builds it must survive a phase ending: the
+// real sound path is reached, finds no file in the config directory, and stays
+// silent rather than panicking on a nil play function.
+func TestAPhaseOnAFreshModelPlaysSilently(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	m := at(New(testConfig()), start)
+	m = press(t, m, "enter")
+
+	_, cmd := tickAt(t, m, start.Add(25*time.Minute+time.Second))
+
+	if got := soundsPlayed(cmd); got != 1 {
+		t.Errorf("played %d sounds, want 1 for the phase that ran out", got)
 	}
 }
 
@@ -344,11 +354,11 @@ func TestASuspendDoesNotHandBackExtraTime(t *testing.T) {
 		t.Errorf("Remaining = %v, want %v; a suspend must not restart the break", got, want)
 	}
 
-	// reported sorts, because the notifications are launched concurrently and so
-	// arrive in no particular order.
-	want := []string{"BREAK", "FOCUS", "FOCUS"}
-	if got := reported(cmd); !equal(got, want) {
-		t.Errorf("notified %v, want %v; every phase that ran out", got, want)
+	// A sound per phase that ran out, so a suspend across three boundaries does
+	// not go unnoticed. The count is what matters; the phases themselves are
+	// covered by the timer's own tests.
+	if got := soundsPlayed(cmd); got != 3 {
+		t.Errorf("played %d sounds, want one for each phase that ran out", got)
 	}
 }
 
@@ -366,8 +376,8 @@ func TestResumingAfterASuspendKeepsTheOriginalSchedule(t *testing.T) {
 	if got, want := m.timer.Remaining(late), 4*time.Minute; got != want {
 		t.Errorf("Remaining = %v, want %v", got, want)
 	}
-	if got, want := reported(cmd), []string{"FOCUS"}; !equal(got, want) {
-		t.Errorf("notified %v, want %v", got, want)
+	if got := soundsPlayed(cmd); got != 1 {
+		t.Errorf("played %d sounds, want 1 for the one phase that ran out", got)
 	}
 }
 
@@ -384,44 +394,8 @@ func TestAPausedTimerIsNotAdvancedByATick(t *testing.T) {
 	if !m.timer.Paused() {
 		t.Error("Paused() = false after a late tick, want true")
 	}
-	if got := reported(cmd); len(got) != 0 {
-		t.Errorf("notified %v, want nothing while paused", got)
-	}
-}
-
-func TestANotificationFailureReachesTheScreen(t *testing.T) {
-	m := press(t, newTestModel(t), "enter")
-
-	m = send(t, m, notifyMsg{phase: timer.PhaseFocus, err: errors.New("no notification daemon")})
-
-	if !strings.Contains(m.warning, "no notification daemon") {
-		t.Errorf("warning = %q, want it to name the failure", m.warning)
-	}
-	if m.failed != 1 || m.sent != 0 {
-		t.Errorf("tallies = %d sent, %d failed; want 0 sent, 1 failed", m.sent, m.failed)
-	}
-	if got := stripANSI(m.render()); !strings.Contains(got, "no notification daemon") {
-		t.Error("the rendered screen does not mention the failure")
-	}
-
-	// A later success clears it.
-	m = send(t, m, notifyMsg{phase: timer.PhaseBreak})
-	if m.warning != "" {
-		t.Errorf("warning = %q after a success, want it cleared", m.warning)
-	}
-	if m.sent != 1 {
-		t.Errorf("sent = %d, want 1", m.sent)
-	}
-}
-
-// A session ended by skipping never attempted a notification, so the summary
-// must not claim they failed or that they were unavailable.
-func TestSkippingThroughToTheSummaryClaimsNothingAboutNotifications(t *testing.T) {
-	m := press(t, press(t, press(t, newTestModel(t), "enter"), "s"), "s")
-
-	got := stripANSI(m.render())
-	if strings.Contains(got, "notification") {
-		t.Errorf("summary mentions notifications though none were attempted:\n%s", got)
+	if got := soundsPlayed(cmd); got != 0 {
+		t.Errorf("played %d sounds, want none while paused", got)
 	}
 }
 
@@ -513,15 +487,15 @@ func filledCells(m Model) int {
 	return strings.Count(stripANSI(m.render()), "\u2501")
 }
 
-// reported runs the commands an update asked for and returns the phases they
-// notified, sorted.
+// soundsPlayed runs the commands an update asked for and counts the completion
+// sounds they played.
 //
-// Ticks sleep until the next whole second and never report anything, so the
-// wait is bounded by a deadline rather than by every command finishing.
-// Notification commands report immediately, so the window is generous for them.
-func reported(cmd tea.Cmd) []string {
+// Ticks sleep until the next whole second and never play anything, so the wait
+// is bounded by a deadline rather than by every command finishing. Sound
+// commands report immediately, so the window is generous for them.
+func soundsPlayed(cmd tea.Cmd) int {
 	if cmd == nil {
-		return nil
+		return 0
 	}
 
 	results := make(chan tea.Msg, 64)
@@ -532,7 +506,7 @@ func reported(cmd tea.Cmd) []string {
 	outstanding := 1
 	launch(cmd)
 
-	var found []string
+	played := 0
 	deadline := time.After(250 * time.Millisecond)
 
 	for outstanding > 0 {
@@ -547,30 +521,16 @@ func reported(cmd tea.Cmd) []string {
 				}
 				continue
 			}
-			if n, ok := msg.(notifyMsg); ok && n.err == nil {
-				found = append(found, n.phase.String())
+			if _, ok := msg.(soundPlayedMsg); ok {
+				played++
 			}
 
 		case <-deadline:
-			sort.Strings(found)
-			return found
+			return played
 		}
 	}
 
-	sort.Strings(found)
-	return found
-}
-
-func equal(got, want []string) bool {
-	if len(got) != len(want) {
-		return false
-	}
-	for i := range got {
-		if got[i] != want[i] {
-			return false
-		}
-	}
-	return true
+	return played
 }
 
 // stripANSI removes escape sequences so tests can assert on readable text.
@@ -883,9 +843,9 @@ func squeeze(s string) string {
 // that looked for history.json specifically would keep passing if the file were
 // renamed, or if a second file appeared beside it.
 //
-// It runs against the real store, wired the way main wires it, because a fake
-// writes nothing by construction: a fake would pass whether or not the program
-// records anything, which is the whole question here.
+// It drives the real model rather than a fake, because a fake writes nothing by
+// construction: it would pass whether or not the program records anything, which
+// is the whole question here.
 func TestFinishingASplitLeavesNothingOnDisk(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -902,7 +862,7 @@ func TestFinishingASplitLeavesNothingOnDisk(t *testing.T) {
 
 	m := New(testConfig())
 	m.now = func() time.Time { return start }
-	m.notify = func(string) error { return nil }
+	m.play = func() {}
 
 	m = at(press(t, m, "enter"), start)
 	now := start

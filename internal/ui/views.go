@@ -143,7 +143,6 @@ type Session struct {
 	Remaining   string
 	ElapsedFrac float64 // 0 at the start of the phase, 1 when it is over
 	BarWidth    int
-	Warning     string
 	Width       int
 }
 
@@ -180,45 +179,19 @@ func (s Session) View() string {
 	if s.Paused {
 		body = append(body, "", PausedLabel.Render("⏸  paused"))
 	}
-	if s.Warning != "" {
-		body = append(body, "", warn(s.Warning, s.Width))
-	}
 
 	return lipgloss.JoinVertical(lipgloss.Center, body...)
 }
 
-// defaultWidth is the width assumed when a screen has not been told one.
-//
-// The zero value of Width has to render something readable rather than something
-// technically correct: wrapping to zero cells puts the warning one character per
-// line, which is unreadable and looks like a crash. The real program always passes a
-// width, so this only affects a screen built without one — chiefly a test.
-const defaultWidth = 80
-
 // fitted renders text trimmed to width, or untouched when no width was given.
 //
 // Trimming is right for a single short line of the user's own text, such as a split
-// name: the end of it is not the point, so an ellipsis costs nothing. It is wrong
-// for a warning, which is why that wraps instead.
+// name: the end of it is not the point, so an ellipsis costs nothing.
 func fitted(width int, style lipgloss.Style, text string) string {
 	if width < 1 {
 		return style.Render(text)
 	}
 	return style.Render(trim(text, width))
-}
-
-// warn renders a failure message, wrapped to the terminal and then capped.
-//
-// Wrapping rather than truncating, because the end of one of these messages is its
-// point: "permission denied" and the path it applies to are both the answer, and a
-// clipped line that hid them would leave the reader with a warning they cannot act
-// on. The cap is still applied afterwards so that a single unbroken word longer
-// than the terminal — a path, a filename — cannot push the edge out on its own.
-func warn(message string, width int) string {
-	if width < 1 {
-		width = defaultWidth
-	}
-	return lipgloss.NewStyle().MaxWidth(width).Render(ErrorStyle.Width(width).Render("⚠  " + message))
 }
 
 // Summary renders the screen shown once a split is complete.
@@ -229,17 +202,7 @@ type Summary struct {
 	// skipped early means less time was focused than the split calls for.
 	Rounds int
 	Focus  string
-
-	// Sent and Failed count the desktop notifications that were actually
-	// attempted, so a session ended by skipping them does not claim they failed.
-	Sent   int
-	Failed int
-
-	// Warning reports anything that went wrong on the way here, such as a
-	// notification that could not be delivered.
-	Warning string
-
-	Width int
+	Width  int
 }
 
 func (s Summary) View() string {
@@ -254,27 +217,7 @@ func (s Summary) View() string {
 			s.Rounds, Plural(s.Rounds, "round", "rounds"), s.Focus)),
 	}
 
-	if notice := s.notice(); notice != "" {
-		body = append(body, "", notice)
-	}
-	if s.Warning != "" {
-		body = append(body, "", warn(s.Warning, s.Width))
-	}
-
 	return lipgloss.JoinVertical(lipgloss.Center, body...)
-}
-
-// notice reports what happened to the notifications, and says nothing at all
-// when none were ever attempted.
-func (s Summary) notice() string {
-	switch {
-	case s.Failed > 0:
-		return ErrorStyle.Render(fmt.Sprintf("%d notification(s) could not be sent", s.Failed))
-	case s.Sent > 0:
-		return Subtle.Render("notifications sent")
-	default:
-		return ""
-	}
 }
 
 // Plural picks between a singular and a plural noun for a count, because "1 rounds"
@@ -343,8 +286,8 @@ func Help(width int, entries ...[2]string) string {
 //
 // There is no matching height constant, because the height a screen needs is not a
 // property of the terminal but of the screen: the picker is a row taller per split
-// configured, and a long warning adds rows to whichever screen carries it. Callers
-// measure the screen they drew and pass the result to TooSmallTall.
+// configured. Callers measure the screen they drew and pass the result to
+// TooSmallTall.
 const MinimumWidth = 27
 
 // TooSmall renders the message shown when the terminal is too narrow to hold the

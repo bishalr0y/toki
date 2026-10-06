@@ -195,34 +195,6 @@ func TestTheSessionScreenShowsBothThePhaseAndThePause(t *testing.T) {
 	}
 }
 
-func TestTheSummaryReportsNotificationOutcomes(t *testing.T) {
-	for _, c := range []struct {
-		name   string
-		sent   int
-		failed int
-		want   string
-		absent string
-	}{
-		{"none attempted says nothing at all", 0, 0, "", "notification"},
-		{"all sent", 2, 0, "notifications sent", ""},
-		{"one failed", 1, 1, "could not be sent", ""},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			out := plain(Summary{
-				SplitName: "long", Rounds: 4, Focus: "3h 20m",
-				Sent: c.sent, Failed: c.failed,
-			}.View())
-
-			if c.want != "" && !strings.Contains(out, c.want) {
-				t.Errorf("summary is missing %q:\n%s", c.want, out)
-			}
-			if c.absent != "" && strings.Contains(out, c.absent) {
-				t.Errorf("summary mentions %q, which it should not:\n%s", c.absent, out)
-			}
-		})
-	}
-}
-
 func TestAnEmptyConfigIsExplained(t *testing.T) {
 	out := plain(Picker{Width: 80}.View())
 
@@ -259,23 +231,6 @@ func plain(s string) string {
 	}
 
 	return out.String()
-}
-
-// A warning is worth saying out loud: a user who believes a notification was sent
-// when it was not has no other way to find out, and a split that ended silently is
-// a split that is easy to miss.
-func TestTheSummaryReportsAFailedNotification(t *testing.T) {
-	// The width is set because a screen that was not told how wide it is has no
-	// width to wrap a warning to, and falls back to one cell. Left unset, this would
-	// have reported a missing notification for the wrong reason.
-	out := plain(Summary{
-		SplitName: "long", Rounds: 1, Focus: "25m", Width: 80,
-		Warning: `desktop notification failed: exec: "notify-send": not found`,
-	}.View())
-
-	if !strings.Contains(out, "notify-send") {
-		t.Errorf("summary hides the failure to notify:\n%s", out)
-	}
 }
 
 // The round count is only shown while working: over a break there is no round in
@@ -387,10 +342,10 @@ func TestNoScreenAsksForAFixedColourValue(t *testing.T) {
 		}.View()},
 		{"break", Session{
 			SplitName: "long", Phase: timer.PhaseBreak, Paused: true,
-			Remaining: "05:00", BarWidth: 20, Width: 80, Warning: "careful",
+			Remaining: "05:00", BarWidth: 20, Width: 80,
 		}.View()},
 		{"summary", Summary{
-			SplitName: "long", Rounds: 4, Focus: "3h 20m", Sent: 2, Width: 80,
+			SplitName: "long", Rounds: 4, Focus: "3h 20m", Width: 80,
 		}.View()},
 		{"help", Help(80, [2]string{"space", "pause"}, [2]string{"t", "theme"},
 			[2]string{"q", "quit"})},
@@ -656,14 +611,13 @@ func TestNoScreenOverflowsAtAnyWidth(t *testing.T) {
 				SplitName: splits[1].Name, Phase: timer.PhaseFocus, Round: "round 1 of 3",
 				Remaining: "25:00", ElapsedFrac: 0.4, BarWidth: barWidth, Width: width,
 			}.View()},
-			{"session, paused with a warning", Session{
+			{"session, paused", Session{
 				SplitName: splits[1].Name, Phase: timer.PhaseBreak, Paused: true,
 				Remaining: "05:00", BarWidth: barWidth, Width: width,
-				Warning: "desktop notification failed: notify-send: not found",
 			}.View()},
 			{"summary", Summary{
 				SplitName: splits[1].Name, Rounds: 4, Focus: "1h 40m",
-				Sent: 2, Width: width,
+				Width: width,
 			}.View()},
 			{"help", Help(width,
 				[2]string{"space", "pause"}, [2]string{"s", "skip"},
@@ -681,63 +635,6 @@ func TestNoScreenOverflowsAtAnyWidth(t *testing.T) {
 	}
 }
 
-// A warning long enough to run off the edge must not take the screen with it.
-//
-// The message is program text, not something the user wrote, so it can be arbitrarily
-// long on its own: a long path, a verbose error from the filesystem.
-//
-// Wrapping is the right treatment here precisely because a filesystem error ends in
-// its cause — "permission denied", the path it applies to — and clipping would drop
-// exactly the part worth reading. So the assertion is that not one character is lost,
-// and it ignores whitespace to say that.
-//
-// Ignoring whitespace is not a convenience. A path longer than the terminal cannot
-// help but be split across lines, and so can the phrase "permission denied" when it
-// lands on a line boundary. Both are still fully readable; a message missing its
-// cause is not. Checking for a substring would fail on a rendering that is perfectly
-// readable, so it would be testing the wrong thing.
-func TestAnOverlongWarningLosesNothing(t *testing.T) {
-	const width = 40
-
-	message := "desktop notification failed: " +
-		"exec /home/someone/with/a/very/long/path/to/bin/notify-send: " +
-		"permission denied"
-
-	out := Session{
-		SplitName: "Classic", Phase: timer.PhaseFocus, Remaining: "25:00",
-		BarWidth: 20, Width: width, Warning: message,
-	}.View()
-
-	assertFits(t, out, width)
-
-	// The warning is the only part of this screen carrying the message.
-	rendered := squeeze(plain(out[strings.Index(plain(out), "desktop"):]))
-	if want := squeeze("⚠  " + message); rendered != want {
-		t.Errorf("the warning did not survive intact\n got: %s\nwant: %s", rendered, want)
-	}
-}
-
-// A screen told nothing about the terminal's width must still render a readable
-// warning, not one character per line.
-//
-// This is what the zero value of Width used to do: wrapping to zero cells is
-// technically correct and completely useless, and it read as a crash rather than as
-// a bug. The real program always passes a width, so this only covers a screen built
-// without one — but it is worth pinning, because the failure is silent and ugly.
-func TestAWarningIsReadableWhenNoWidthWasGiven(t *testing.T) {
-	out := plain(Summary{
-		SplitName: "Classic", Rounds: 1, Focus: "25m",
-		Warning: "desktop notification failed: exec: \"notify-send\": not found",
-	}.View())
-
-	if !strings.Contains(out, "notify-send") {
-		t.Errorf("without a width the warning is unreadable:\n%s", out)
-	}
-	if strings.Contains(out, "n\no\nt\ni") {
-		t.Errorf("without a width the warning is broken one character per line:\n%s", out)
-	}
-}
-
 // squeeze removes every space from s, so a comparison can tell whether text was lost
 // without caring where the lines happened to break.
 func squeeze(s string) string {
@@ -747,24 +644,6 @@ func squeeze(s string) string {
 		}
 		return r
 	}, s)
-}
-
-// The warning is the longest line on any screen, so it is what runs off the edge
-// first. Sweeping widths is what catches it, because the picker overflowed in a band
-// of four columns that a test at any one width would have stepped straight over.
-func TestAWarningFitsAtEveryWidth(t *testing.T) {
-	message := "desktop notification failed: " +
-		"exec /home/someone/with/a/very/long/path/to/bin/notify-send: " +
-		"permission denied"
-
-	for width := 27; width <= 120; width++ {
-		out := Session{
-			SplitName: "Classic", Phase: timer.PhaseFocus, Remaining: "25:00",
-			BarWidth: min(44, max(width-10, 4)), Width: width, Warning: message,
-		}.View()
-
-		assertFits(t, out, width)
-	}
 }
 
 // The complaint has to say how much room is needed, or the user has no way to know how
@@ -801,7 +680,7 @@ func TestATooShortWindowIsNotToldToGetWider(t *testing.T) {
 
 // The height quoted has to be the one that was actually needed. It is measured from
 // the rendered screen rather than declared as a constant, so the message stays true as
-// the picker grows by a row per split and warnings add rows of their own.
+// the picker grows by a row per split.
 func TestTheHeightQuotedIsTheHeightActuallyNeeded(t *testing.T) {
 	out := plain(TooSmallTall(80, 9, 14))
 

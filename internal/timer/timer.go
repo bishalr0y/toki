@@ -68,7 +68,7 @@ func (s Split) durationFor(p Phase) time.Duration {
 //
 // It never reads the clock itself: every method that needs to know the current
 // time takes now as an argument. That keeps the type deterministic and
-// testable, and keeps rendering and notification out of it.
+// testable, and keeps rendering and playback out of it.
 //
 // Remaining time is always derived from an absolute deadline rather than
 // decremented per tick, so a late or skipped update can never make the

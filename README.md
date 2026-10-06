@@ -11,7 +11,7 @@ A Pomodoro timer for the terminal.
 - Countdown that tracks the wall clock, so it stays accurate across a suspend
 - A summary of what you actually focused, not what the plan called for
 - Configurable splits via YAML
-- Desktop notifications per phase, with failures reported on screen
+- A completion sound per phase, from a file you drop in the config directory
 - Live progress bar, and colour that respects the terminal's own palette
 
 ## Installation
@@ -87,6 +87,25 @@ timers:
 
 So the split above runs focus, break, focus, break, focus, break, focus, long
 break — and is then finished, with a summary of what you actually worked.
+
+## Completion sound
+
+toki can play a sound each time a phase ends. Put a file in the config
+directory and it will be used; there is nothing to configure:
+
+```bash
+cp my-sound.wav ~/.config/toki/complete.wav
+```
+
+`complete.wav`, `complete.mp3`, `complete.ogg`, `complete.m4a` and
+`complete.flac` are all recognised, as are the same names beginning with `toki`
+(`toki.wav`, `toki.mp3`, `toki.ogg`). If more than one is present the first in
+that order wins.
+
+Playback is best-effort. toki hands the file to whichever player is installed —
+`afplay` on macOS, `paplay`/`aplay`/`pw-play` on Linux, and so on — and it never
+blocks the countdown. If there is no sound file, or no player to run it, the
+phase simply passes in silence; toki will not nag you about it.
 
 ## What it keeps
 
