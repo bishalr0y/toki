@@ -2,7 +2,9 @@
 
 A Pomodoro timer for the terminal.
 
-![toki counting down a focus session](docs/toki.png)
+![The split picker](docs/toki-menu.jpg)
+
+![A focus session counting down](docs/toki.jpg)
 
 ## Features
 
