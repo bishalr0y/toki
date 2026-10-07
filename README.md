@@ -1,4 +1,4 @@
-# toki (とき)
+# toki (とき) 🍅
 
 A Pomodoro timer for the terminal.
 
