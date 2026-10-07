@@ -115,16 +115,20 @@ handle it, the phase simply passes in silence; toki will not nag you about it.
 
 ## What it keeps
 
-Nothing about your work. toki keeps no history: a finished split is summarised on
-screen and then forgotten, so there is no record on your machine of when you
-worked or for how long.
+Nothing about your work. toki keeps no history, no logs and no statistics: a
+finished split is summed up on screen and then forgotten, so there is no record
+on your machine of when you worked or for how long.
 
-The only files it writes are its own setup, and only on the first run, when
-neither exists yet: `config.yaml` and the default `sound.wav`. After that toki
-reads them and leaves them alone — delete either one and it stays deleted.
+The only files it writes are its own setup, and they live in `~/.config/toki/`:
 
-If you want a record of your work kept, it belongs to something built to keep it:
-a calendar, a time tracker, whatever you already use to account for your week.
+- **`config.yaml`** is written whenever it is missing, including on the first
+  run. Delete it and the next run writes a fresh default in its place.
+- **`sound.wav`** is written only on the run that creates `config.yaml`, and
+  never over a file that is already there. Delete it and it stays gone: toki
+  will not put it back while `config.yaml` exists.
+
+Beyond those two, toki only reads. If you want a record of your work, keep it in
+something built to keep one — a calendar or a time tracker.
 
 ## Development
 
