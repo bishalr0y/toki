@@ -2,6 +2,8 @@
 
 A Pomodoro timer for the terminal.
 
+![toki counting down a focus session](docs/toki.png)
+
 ## Features
 
 - Full-screen timer built with [Bubble Tea](https://github.com/charmbracelet/bubbletea)
