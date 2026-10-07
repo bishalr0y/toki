@@ -261,7 +261,18 @@ func (m Model) tickCmd(now time.Time) tea.Cmd {
 
 // View satisfies tea.Model.
 func (m Model) View() tea.View {
-	v := tea.NewView(m.render())
+	// The screen is drawn as one block and then placed in the middle of the
+	// terminal, across and down, rather than left to hug the top-left corner.
+	//
+	// The placing happens here rather than in render because render's output is
+	// what the "too small" check measures: padding the screen out to the whole
+	// window first would leave that check nothing to notice, and a countdown
+	// clipped off the bottom would be accepted as fitting.
+	v := tea.NewView(lipgloss.Place(
+		m.width, m.height,
+		lipgloss.Center, lipgloss.Center,
+		m.render(),
+	))
 	// Draw on the alternate screen so the interface never scrolls the user's
 	// shell history, and so quitting restores the terminal as it was found.
 	v.AltScreen = true

@@ -427,6 +427,58 @@ func TestTheViewDrawsOnTheAlternateScreen(t *testing.T) {
 	}
 }
 
+// The whole interface is placed in the middle of the terminal rather than pinned
+// to the top left, so the picker's logo and the countdown sit in the same place at
+// any window size.
+//
+// The check grows the window and watches the interface move by half the difference
+// in each direction, which is what "centred" means, and is a property that cannot
+// be faked by indenting: a fixed offset would move by nothing when the window
+// grows, so a test that only looked at one size would pass for it.
+func TestTheInterfaceIsCentredInTheWindow(t *testing.T) {
+	base := resized(t, newTestModel(t), 80, 24).View().Content
+
+	// Ten columns wider must move the left edge five columns right.
+	wider := resized(t, newTestModel(t), 90, 24).View().Content
+	if got, want := leadingColumns(wider)-leadingColumns(base), 5; got != want {
+		t.Errorf("widening by 10 moved the left edge by %d columns, want %d", got, want)
+	}
+
+	// Ten rows taller must move the top edge five rows down.
+	taller := resized(t, newTestModel(t), 80, 34).View().Content
+	if got, want := leadingRows(taller)-leadingRows(base), 5; got != want {
+		t.Errorf("heightening by 10 moved the top edge by %d rows, want %d", got, want)
+	}
+}
+
+// leadingColumns is how far the interface is inset from the left edge: the fewest
+// spaces before text on any drawn row. Blank rows are skipped, since Place's
+// vertical padding would otherwise stand in for horizontal inset.
+func leadingColumns(view string) int {
+	least := -1
+	for line := range strings.SplitSeq(stripANSI(view), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		if n := len(line) - len(strings.TrimLeft(line, " ")); least < 0 || n < least {
+			least = n
+		}
+	}
+	return least
+}
+
+// leadingRows is how many blank rows sit above the interface.
+func leadingRows(view string) int {
+	n := 0
+	for line := range strings.SplitSeq(stripANSI(view), "\n") {
+		if strings.TrimSpace(line) != "" {
+			break
+		}
+		n++
+	}
+	return n
+}
+
 func TestEachScreenRendersItsContent(t *testing.T) {
 	picker := newTestModel(t)
 
