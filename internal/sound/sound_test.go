@@ -57,18 +57,49 @@ func TestDefaultIsAValidWAV(t *testing.T) {
 	}
 }
 
-// The completion sound has exactly one name, so there is nothing to choose
-// between and nothing to remember.
+// The completion sound has exactly one name, whatever its format, so there is
+// nothing to choose between and nothing to remember.
 func TestFindReturnsTheCompletionSound(t *testing.T) {
 	dir := t.TempDir()
-	touch(t, dir, Name)
+	touch(t, dir, DefaultFile)
 
 	got, ok := Find(dir)
 	if !ok {
-		t.Fatalf("Find found no sound, want %s", Name)
+		t.Fatalf("Find found no sound, want %s", DefaultFile)
 	}
-	if want := filepath.Join(dir, Name); got != want {
+	if want := filepath.Join(dir, DefaultFile); got != want {
 		t.Errorf("Find = %q, want %q", got, want)
+	}
+}
+
+// A WAV is not the only format that counts: an MP3 the user dropped in is found
+// when there is no WAV, so the one name works in either format.
+func TestFindFindsAnMP3WhenThereIsNoWAV(t *testing.T) {
+	dir := t.TempDir()
+	touch(t, dir, "sound.mp3")
+
+	got, ok := Find(dir)
+	if !ok {
+		t.Fatal("Find found no sound, want sound.mp3")
+	}
+	if want := filepath.Join(dir, "sound.mp3"); got != want {
+		t.Errorf("Find = %q, want %q", got, want)
+	}
+}
+
+// When both formats are present the shipped default wins, so the choice is
+// deterministic rather than whichever file the filesystem happens to list first.
+func TestFindPrefersTheWAVWhenBothFormatsArePresent(t *testing.T) {
+	dir := t.TempDir()
+	touch(t, dir, "sound.mp3")
+	touch(t, dir, DefaultFile)
+
+	got, ok := Find(dir)
+	if !ok {
+		t.Fatal("Find found no sound")
+	}
+	if want := filepath.Join(dir, DefaultFile); got != want {
+		t.Errorf("Find = %q, want the WAV %q", got, want)
 	}
 }
 
@@ -78,10 +109,12 @@ func TestFindIgnoresEveryOtherName(t *testing.T) {
 	dir := t.TempDir()
 	touch(t, dir, "toki.mp3")
 	touch(t, dir, "complete.ogg")
-	touch(t, dir, "chime.wav")
+	touch(t, dir, "chime.wav")  // a wav, but not our stem
+	touch(t, dir, "sound.flac") // our stem, but a format we do not claim
+	touch(t, dir, "sounds.wav") // nearly our name, wrong stem
 
 	if got, ok := Find(dir); ok {
-		t.Errorf("Find = %q, true; want only %s to count", got, Name)
+		t.Errorf("Find = %q, true; want only %s{.wav,.mp3} to count", got, Base)
 	}
 }
 
@@ -95,7 +128,7 @@ func TestFindReportsNoSoundInAnEmptyDirectory(t *testing.T) {
 // hand a directory to the player and fail.
 func TestFindIgnoresADirectoryNamedLikeTheSound(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.Mkdir(filepath.Join(dir, Name), 0o755); err != nil {
+	if err := os.Mkdir(filepath.Join(dir, DefaultFile), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -107,7 +140,7 @@ func TestFindIgnoresADirectoryNamedLikeTheSound(t *testing.T) {
 // Play must run whichever player is actually installed, and pass it the sound.
 func TestPlayRunsTheFirstAvailablePlayerWithTheSound(t *testing.T) {
 	dir := t.TempDir()
-	touch(t, dir, Name)
+	touch(t, dir, DefaultFile)
 
 	s := &stub{available: map[string]bool{"aplay": true, "mpv": true}}
 	s.install(t)
@@ -120,8 +153,59 @@ func TestPlayRunsTheFirstAvailablePlayerWithTheSound(t *testing.T) {
 	if s.ran[0] != "aplay" {
 		t.Errorf("ran %q, want aplay, the first available player", s.ran[0])
 	}
-	if len(s.ranArgs[0]) == 0 || s.ranArgs[0][len(s.ranArgs[0])-1] != filepath.Join(dir, Name) {
+	if len(s.ranArgs[0]) == 0 || s.ranArgs[0][len(s.ranArgs[0])-1] != filepath.Join(dir, DefaultFile) {
 		t.Errorf("args = %v, want the sound path last", s.ranArgs[0])
+	}
+}
+
+// A WAV-only player must not be handed an MP3. aplay would exit non-zero and
+// the chime would be silently lost, so Play has to skip players that cannot
+// play the file's format rather than pretending every player handles every file.
+func TestPlaySkipsAPlayerThatCannotHandleTheFormat(t *testing.T) {
+	dir := t.TempDir()
+	touch(t, dir, "sound.mp3")
+
+	s := &stub{available: map[string]bool{"aplay": true}}
+	s.install(t)
+
+	Play(dir)
+
+	if len(s.ran) != 0 {
+		t.Errorf("ran %v, want the wav-only player to be skipped", s.ran)
+	}
+}
+
+// When a format-capable player is installed alongside a wav-only one, the
+// capable player is the one that runs.
+func TestPlayPicksAPlayerThatHandlesTheMP3(t *testing.T) {
+	dir := t.TempDir()
+	touch(t, dir, "sound.mp3")
+
+	s := &stub{available: map[string]bool{"aplay": true, "mpg123": true}}
+	s.install(t)
+
+	Play(dir)
+
+	if len(s.ran) != 1 || s.ran[0] != "mpg123" {
+		t.Fatalf("ran %v, want only mpg123", s.ran)
+	}
+	if last := s.ranArgs[0][len(s.ranArgs[0])-1]; last != filepath.Join(dir, "sound.mp3") {
+		t.Errorf("args = %v, want the mp3 path last", s.ranArgs[0])
+	}
+}
+
+// The reverse also holds: an mp3-only player must not be handed a WAV.
+func TestPlayDoesNotHandAWAVToAnMP3OnlyPlayer(t *testing.T) {
+	dir := t.TempDir()
+	touch(t, dir, DefaultFile)
+
+	s := &stub{available: map[string]bool{"mpg123": true}}
+	s.install(t)
+
+	Play(dir)
+
+	if len(s.ran) != 0 {
+		t.Errorf("ran %v, want the mp3-only player to be skipped for a wav", s.ran)
 	}
 }
 
@@ -140,7 +224,7 @@ func TestPlayStaysSilentWithoutASound(t *testing.T) {
 // A sound but no player on a minimal system is not an error worth surfacing.
 func TestPlayStaysSilentWithoutAPlayer(t *testing.T) {
 	dir := t.TempDir()
-	touch(t, dir, Name)
+	touch(t, dir, DefaultFile)
 
 	s := &stub{available: map[string]bool{}}
 	s.install(t)
@@ -156,7 +240,7 @@ func TestPlayStaysSilentWithoutAPlayer(t *testing.T) {
 // failure is swallowed and the timer carries on.
 func TestPlaySwallowsAFailingPlayer(t *testing.T) {
 	dir := t.TempDir()
-	touch(t, dir, Name)
+	touch(t, dir, DefaultFile)
 
 	s := &stub{available: map[string]bool{"afplay": true}, fail: true}
 	s.install(t)

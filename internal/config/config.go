@@ -166,7 +166,7 @@ func ReadConfig() (Config, error) {
 // wins, which is what makes deleting the sound a way to turn it off for good
 // instead of having it reappear on the next launch.
 func writeDefaultSound(dir string) {
-	path := filepath.Join(dir, sound.Name)
+	path := filepath.Join(dir, sound.DefaultFile)
 
 	// O_EXCL is the "never overwrite" part: if the user already has a sound
 	// there, this fails and we leave theirs alone.

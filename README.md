@@ -98,14 +98,16 @@ first time toki runs:
 ~/.config/toki/sound.wav
 ```
 
-It is one fixed name; there is no list to remember and nothing to configure. To
-use your own sound, replace that file — any `.wav` you drop in its place is
-played. To turn the sound off, delete the file; toki will not put it back.
+The name is fixed; only the format is up to you. toki looks for `sound.wav` and
+then `sound.mp3`, so a `.wav` wins if you keep both. To use your own sound,
+replace the file — any `.wav` or `.mp3` you drop in works, as long as it keeps
+the name. To turn the sound off, delete the file; toki will not put it back.
 
-Playback is best-effort. toki hands the file to whichever player is installed —
-`afplay` on macOS, `paplay`/`aplay`/`pw-play` on Linux, and so on — and it never
-blocks the countdown. If there is no sound file, or no player to run it, the
-phase simply passes in silence; toki will not nag you about it.
+Playback is best-effort. toki hands the file to whichever player is installed
+and can actually play that format — `afplay` on macOS, `paplay`/`aplay`/`pw-play`
+for WAV, `mpg123` for MP3, and `mpv`/`ffplay`/`mplayer` for anything — and it
+never blocks the countdown. If there is no sound file, or no player that can
+handle it, the phase simply passes in silence; toki will not nag you about it.
 
 ## What it keeps
 

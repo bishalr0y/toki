@@ -61,7 +61,7 @@ func TestReadConfigShipsACompletionSoundOnFirstRun(t *testing.T) {
 		t.Fatalf("ReadConfig() returned error: %v", err)
 	}
 
-	path := filepath.Join(tmpHome, ".config/toki", sound.Name)
+	path := filepath.Join(tmpHome, ".config/toki", sound.DefaultFile)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("expected a completion sound at %s: %v", path, err)
@@ -82,7 +82,7 @@ func TestAnExistingCompletionSoundIsNotOverwritten(t *testing.T) {
 		t.Fatal(err)
 	}
 	mine := []byte("my own sound")
-	if err := os.WriteFile(filepath.Join(dir, sound.Name), mine, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, sound.DefaultFile), mine, 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -90,7 +90,7 @@ func TestAnExistingCompletionSoundIsNotOverwritten(t *testing.T) {
 		t.Fatalf("ReadConfig() returned error: %v", err)
 	}
 
-	got, err := os.ReadFile(filepath.Join(dir, sound.Name))
+	got, err := os.ReadFile(filepath.Join(dir, sound.DefaultFile))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +118,7 @@ func TestTheCompletionSoundIsNotRestoredOnceTheConfigExists(t *testing.T) {
 		t.Fatalf("ReadConfig() returned error: %v", err)
 	}
 
-	if _, err := os.Stat(filepath.Join(dir, sound.Name)); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(dir, sound.DefaultFile)); !os.IsNotExist(err) {
 		t.Errorf("a completion sound appeared even though the config already existed (err=%v)", err)
 	}
 }
