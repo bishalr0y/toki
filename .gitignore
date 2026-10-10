@@ -36,3 +36,6 @@ PLAN.md
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# MacOS
+.DS_Store
