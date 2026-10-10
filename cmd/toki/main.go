@@ -8,9 +8,13 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/bishalr0y/toki/internal/app"
 	"github.com/bishalr0y/toki/internal/config"
+	historyPkg "github.com/bishalr0y/toki/internal/history"
+	"github.com/bishalr0y/toki/internal/ui"
 )
 
 // version is overridden at build time with:
@@ -76,6 +80,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 		showHelp    = fs.Bool("help", false, "show this help and exit")
 		showVersion = fs.Bool("version", false, "print the version and exit")
 		listSplits  = fs.Bool("list", false, "print the configured splits and exit")
+		showToday   = fs.Bool("stats", false, "show today's focus and round count")
+		showHistory = fs.Bool("history", false, "show every recorded split in the last 3 months")
 	)
 	fs.BoolVar(showHelp, "h", false, "show this help and exit")
 
@@ -98,8 +104,16 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return list(stdout)
 	}
 
-	// Nothing was asked for, so this is a normal interactive run.
+	// The statistics are printed rather than drawn, like --list.
 	//
+	// A full screen interface to answer "how much did I do today" would be absurd:
+	// it would have to be drawn, redrawn, and then dismissed before the number
+	// could be read, and the answer would be impossible to pipe or grep. These are
+	// questions asked from a shell, so they are answered from a shell.
+	if *showToday || *showHistory {
+		return report(stdout, *showToday, *showHistory)
+	}
+
 	// Read once at startup. The old menu re-read the file on every iteration,
 	// so edits made mid-session silently changed what was on screen.
 	cfg, err := config.ReadConfig()
@@ -108,6 +122,55 @@ func run(args []string, stdout, stderr io.Writer) error {
 	}
 
 	return app.Run(cfg)
+}
+
+// report prints the requested statistics and exits.
+//
+// Both can be asked for at once, and then both are printed: each answers a
+// different question, and neither subsumes the other. Today comes first because
+// it is the figure most likely to be wanted.
+func report(out io.Writer, today, history bool) error {
+	now := time.Now()
+
+	var sections []string
+
+	if today {
+		totals, err := historyPkg.Today(now)
+		if err != nil {
+			return err
+		}
+		sections = append(sections, ui.ReportSection("today", ui.TodayTable(totals)))
+	}
+
+	if history {
+		records, err := historyPkg.Recent(now)
+		if err != nil {
+			return err
+		}
+
+		days := historyPkg.GroupByDay(records)
+
+		var total historyPkg.Totals
+		for _, d := range days {
+			total.Focused += d.Total.Focused
+			total.Rounds += d.Total.Rounds
+			total.Splits += d.Total.Splits
+		}
+
+		heading := fmt.Sprintf("last %d months", historyPkg.RetentionMonths)
+		sections = append(sections, ui.ReportSection(heading, ui.HistoryTable(days, total)))
+	}
+
+	// One blank line before every heading, the first included.
+	//
+	// The leading newline is what gives the first heading the same breathing room
+	// as the rest: without it the report opens on a heading in the very first
+	// column, which reads as though the top of it had been cut off. Two newlines
+	// between the sections then make every heading sit after exactly one blank
+	// line rather than the first being tighter than the ones that follow.
+	fmt.Fprint(out, "\n"+strings.Join(sections, "\n\n")+"\n")
+
+	return nil
 }
 
 // list prints the configured splits and exits.
@@ -145,6 +208,8 @@ func usage(out io.Writer) {
 
 Usage:
   toki              start the interface and pick a split
+  toki --stats      print today's focus and round count
+  toki --history    print every recorded split in the last 3 months
   toki --list       print the configured splits and exit
   toki --help       show this help and exit
   toki --version    print the version and exit

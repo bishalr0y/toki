@@ -14,9 +14,13 @@ A Pomodoro timer for the terminal.
 - Pause, resume and skip phases without stopping
 - Countdown that tracks the wall clock, so it stays accurate across a suspend
 - A summary of what you actually focused, not what the plan called for
+- Today's total on the picker and under the progress bar, moving as rounds finish
+- `toki --stats` and `toki --history` to look back, printed like `--list`
 - Configurable splits via YAML
 - A completion sound per phase, on by default but easy to swap or delete
 - Live progress bar, and colour that respects the terminal's own palette
+- No account, no network, no telemetry — the history is a plain text file you can
+  read and delete
 
 ## Installation
 
@@ -36,10 +40,13 @@ just build
 ## Usage
 
 ```bash
-toki              # start the interface and pick a split
-toki --list       # print the configured splits and exit
-toki --help       # show the help and exit
-toki --version    # print the version and exit
+toki                      # start the interface and pick a split
+toki --stats              # print today's focus and round count
+toki --history            # print every recorded split in the last 3 months
+toki --stats --history    # both, in one go
+toki --list               # print the configured splits and exit
+toki --help               # show the help and exit
+toki --version            # print the version and exit
 ```
 
 Pick a split with `↑` `↓` and `enter`, or press its number to start it
@@ -49,6 +56,46 @@ it.
 `toki --list` prints the splits as they will actually run, so it is the quickest
 way to check that an edit to `config.yaml` took effect without launching
 anything.
+
+Today's total appears on the split picker and under the progress bar while a
+session runs, moving as each round finishes. Abandoning a split with `esc` records
+nothing.
+
+### Reports
+
+`--stats` and `--history` print and exit rather than opening the interface, the
+same as `--list`, so the output can be piped:
+
+```
+$ toki --stats
+
+today  ────────────────────
+
+╭─────────  ────────  ────────╮
+│ focused  rounds   splits   │
+├─────────  ────────  ────────┤
+│ 4h 10m   8       2      │
+╰─────────  ────────  ────────╯
+```
+
+```
+$ toki --history
+
+last 3 months  ──────────────────────────────
+
+╭────────────  ────────  ─────────  ───────  ────────╮
+│ date        split  focused    rounds   ended    │
+├────────────  ────────  ─────────  ───────  ────────┤
+│ 2026-10-10  long   3h 20m   4       15:49   │
+│             short  50m      4       13:49   │
+│ 2026-10-09  long   3h 20m   4       09:30   │
+│ 2026-10-08  short  25m      1       16:45   │
+╰────────────  ────────  ─────────  ───────  ────────╯
+
+7h 55m  ·  13 rounds  ·  4 splits
+```
+
+Give both flags to print both reports.
 
 ### Keys
 
@@ -115,11 +162,29 @@ handle it, the phase simply passes in silence; toki will not nag you about it.
 
 ## What it keeps
 
-Nothing about your work. toki keeps no history, no logs and no statistics: a
-finished split is summed up on screen and then forgotten, so there is no record
-on your machine of when you worked or for how long.
+A record of the splits you finished, and nothing else. toki writes no logs, keeps
+no telemetry and never touches the network — the history is a file on your own
+machine, and it is yours to read or delete.
 
-The only files it writes are its own setup, and they live in `~/.config/toki/`:
+```
+~/.config/toki/sessions.jsonl
+```
+
+It is plain text, one JSON record per line:
+
+```json
+{"name":"long","focused_s":12000,"rounds":4,"ended_at":"2026-10-08T14:32:00Z"}
+```
+
+Only what actually happened is stored, so a skipped phase makes for a shorter
+`focused_s` than the split called for. Nothing about *what* you worked on is kept,
+only that a split named `long` ran.
+
+Records older than three months are removed as new ones are written, which is the
+same window `--history` shows. To erase everything, delete the file — there is no
+database directory, index or journal to clean up, and toki starts empty.
+
+The rest of what it writes is its own setup:
 
 - **`config.yaml`** is written whenever it is missing, including on the first
   run. Delete it and the next run writes a fresh default in its place.
@@ -127,8 +192,9 @@ The only files it writes are its own setup, and they live in `~/.config/toki/`:
   never over a file that is already there. Delete it and it stays gone: toki
   will not put it back while `config.yaml` exists.
 
-Beyond those two, toki only reads. If you want a record of your work, keep it in
-something built to keep one — a calendar or a time tracker.
+Beyond those, toki only reads. If you would rather keep no record at all, deleting
+`sessions.jsonl` is enough — and note that a dotfile manager is probably copying
+that folder for you already.
 
 ## Development
 

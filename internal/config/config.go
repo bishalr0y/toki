@@ -62,7 +62,18 @@ func (c Config) withDefaults() Config {
 }
 
 // Dir reports where toki keeps its files.
+//
+// XDG_CONFIG_HOME is honoured when set, because that is where a Linux user expects
+// a program's configuration to live and it is the only way to keep two setups
+// apart. It is deliberately *not* read through os.UserConfigDir: on macOS that
+// resolves to ~/Library/Application Support, which would silently move the config
+// out from under everyone who already has one. Honouring the variable only when it
+// is set leaves the default path exactly as it was.
 func Dir() (string, error) {
+	if dir := os.Getenv("XDG_CONFIG_HOME"); filepath.IsAbs(dir) {
+		return filepath.Join(dir, "toki"), nil
+	}
+
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("failed to get home dir: %w", err)

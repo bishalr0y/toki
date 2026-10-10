@@ -44,6 +44,10 @@ type Picker struct {
 	Splits []Split
 	Cursor int
 	Width  int
+	// Today is the day's running total, shown under the list. Blank when there is
+	// nothing to show, which is the same rule the session screen's line follows:
+	// "today 0s" on a day that has just started reads as a broken counter.
+	Today string
 }
 
 func (p Picker) View() string {
@@ -63,15 +67,22 @@ func (p Picker) View() string {
 		rows = append(rows, ErrorStyle.Render("no timer splits configured — see ~/.config/toki/config.yaml"))
 	}
 
-	return lipgloss.JoinVertical(
-		lipgloss.Left,
-		append([]string{
-			Title(),
-			"",
-			Subtle.Render("Choose a split"),
-			"",
-		}, rows...)...,
-	)
+	body := append([]string{
+		Title(),
+		"",
+		Subtle.Render("Choose a split"),
+		"",
+	}, rows...)
+
+	// After the list rather than above it. The split rows are what the screen is
+	// for, and a figure above them would push the first split down by a row on
+	// every launch — including the many launches on a day with nothing recorded,
+	// where there is no figure to show anyway.
+	if p.Today != "" {
+		body = append(body, "", fitted(p.Width, Subtle, p.Today))
+	}
+
+	return lipgloss.JoinVertical(lipgloss.Left, body...)
 }
 
 // rowLabel lays out one split, dropping to a compact form when the full
@@ -144,6 +155,10 @@ type Session struct {
 	ElapsedFrac float64 // 0 at the start of the phase, 1 when it is over
 	BarWidth    int
 	Width       int
+	// Today is the running total for the day, shown under the countdown. It is
+	// blank rather than zero when nothing has been recorded, because "today 0s" is
+	// a worse thing to read than no line at all.
+	Today string
 }
 
 func (s Session) View() string {
@@ -154,11 +169,18 @@ func (s Session) View() string {
 		barStyle = BreakBar
 	}
 
-	// The name is trimmed rather than trusted to fit: it comes from the config, so
-	// its length is the user's choice and a long one must not push the screen past
-	// the edge. A screen told nothing about the width is not trimmed, since there is
-	// nothing to fit inside.
+	// The wordmark, then the split, then the phase. The banner costs seven rows and
+	// the session screen is already the tallest thing toki draws, so on a short
+	// window this is what tips it into the "too small" complaint — which is the
+	// right failure, since a countdown that cannot be seen is worse than a
+	// countdown without a logo.
 	body := []string{
+		Title(),
+		"",
+		// The name is trimmed rather than trusted to fit: it comes from the config, so
+		// its length is the user's choice and a long one must not push the screen past
+		// the edge. A screen told nothing about the width is not trimmed, since there
+		// is nothing to fit inside.
 		fitted(s.Width, Subtle, "split: "+s.SplitName),
 		"",
 		label,
@@ -175,6 +197,10 @@ func (s Session) View() string {
 		"",
 		Bar(s.ElapsedFrac, s.BarWidth, barStyle),
 	)
+
+	if s.Today != "" {
+		body = append(body, "", fitted(s.Width, Subtle, s.Today))
+	}
 
 	if s.Paused {
 		body = append(body, "", PausedLabel.Render("⏸  paused"))
@@ -195,6 +221,11 @@ func fitted(width int, style lipgloss.Style, text string) string {
 }
 
 // Summary renders the screen shown once a split is complete.
+//
+// It carries the wordmark like the picker and the session screen do, so the three
+// screens a session passes through are visibly the same program. It costs seven
+// rows, which is affordable here: the summary is short and the screen is only on
+// display until a key is pressed.
 type Summary struct {
 	SplitName string
 	// Rounds is how many focus rounds finished and Focus how long was actually
@@ -207,6 +238,7 @@ type Summary struct {
 
 func (s Summary) View() string {
 	body := []string{
+		Title(),
 		"",
 		SuccessStyle.Render("✓  split complete"),
 		"",

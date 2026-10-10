@@ -12,6 +12,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/bishalr0y/toki/internal/config"
+	"github.com/bishalr0y/toki/internal/history"
 	"github.com/bishalr0y/toki/internal/timer"
 )
 
@@ -630,6 +631,36 @@ func walkToSummary(t *testing.T, m Model, begin time.Time) Model {
 	return m
 }
 
+// walkToSummaryRecording walks to the summary and returns the model plus the one
+// command that has a side effect: the one that writes the record.
+//
+// Running every command along the way would mean running the tick commands too,
+// and each of those blocks until the next whole second. Four per test, across
+// several tests, is all of it spent asleep. A tick only schedules a redraw the test
+// never receives, so running it tests nothing; the write is the command worth
+// running.
+func walkToSummaryRecording(t *testing.T, m Model, begin time.Time) (Model, tea.Cmd) {
+	t.Helper()
+
+	m = at(press(t, m, "enter"), begin)
+	for range 20 {
+		if m.screen == screenSummary {
+			t.Fatal("the split finished before it started")
+		}
+
+		next := m.now().Add(90 * time.Minute)
+		var cmd tea.Cmd
+		m, cmd = sendCmd(t, at(m, next), key("s"))
+
+		if m.screen == screenSummary {
+			return m, cmd
+		}
+	}
+
+	t.Fatal("the split never finished")
+	return m, nil
+}
+
 // The summary has to state what was achieved, which is not the plan when phases
 // were skipped early.
 func TestTheSummaryStatesWhatWasFocusedRatherThanThePlan(t *testing.T) {
@@ -883,27 +914,52 @@ func squeeze(s string) string {
 	}, s)
 }
 
-// Finishing a split must leave nothing behind on disk.
+// run performs the command an update asked for, and everything it asked for.
 //
-// toki used to append every finished split to ~/.config/toki/history.json. That
-// file was the only thing it ever wrote, so removing it makes the program write
-// nothing at all — which is the property worth pinning, because it is the one
-// that cannot be undone later. A user who finds toki has been leaving a record of
-// every working minute on their machine has no way to undo the finding.
+// The commands have to actually run for a test about disk to mean anything: a
+// command that is merely returned has not written anything yet, so a test that
+// discards them would pass against a model that records nothing at all. That is
+// not hypothetical — the test below did exactly that until the recording was
+// routed through a command.
 //
-// The check walks the whole temp home rather than looking for one filename. A test
-// that looked for history.json specifically would keep passing if the file were
-// renamed, or if a second file appeared beside it.
+// tea.Batch nests arbitrarily, since Update batches a tick and a sound together,
+// so this walks down rather than assuming one level.
+func run(t *testing.T, cmd tea.Cmd) {
+	t.Helper()
+
+	if cmd == nil {
+		return
+	}
+
+	msg := cmd()
+	if msg == nil {
+		return
+	}
+
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		for _, c := range batch {
+			run(t, c)
+		}
+	}
+}
+
+// Finishing a split records it, and records it once.
 //
-// It drives the real model rather than a fake, because a fake writes nothing by
-// construction: it would pass whether or not the program records anything, which
-// is the whole question here.
-func TestFinishingASplitLeavesNothingOnDisk(t *testing.T) {
+// This replaces TestFinishingASplitLeavesNothingOnDisk, which pinned the opposite
+// and was removed along with the recording it forbade. What is worth pinning now
+// is narrower and survives a change of storage: one completed split produces
+// exactly one record, and nothing else is written beside it.
+//
+// The check walks the whole temp home and counts files rather than looking for one
+// name, so a second file appearing beside the history — a lock, an index, a stray
+// temp — fails this rather than passing unnoticed.
+func TestFinishingASplitRecordsItOnce(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
 
-	// The config directory is created up front, so "wrote nothing" cannot be
-	// satisfied by having had nowhere to write in the first place.
+	// The config directory is created up front, so "wrote one file" cannot be
+	// satisfied by the directory simply not existing yet.
 	dir, err := config.Dir()
 	if err != nil {
 		t.Fatal(err)
@@ -916,12 +972,9 @@ func TestFinishingASplitLeavesNothingOnDisk(t *testing.T) {
 	m.now = func() time.Time { return start }
 	m.play = func() {}
 
-	m = at(press(t, m, "enter"), start)
-	now := start
-	for range 4 {
-		now = now.Add(40 * time.Minute)
-		m = skip(t, m, now)
-	}
+	var cmd tea.Cmd
+	m, cmd = walkToSummaryRecording(t, m, start)
+	run(t, cmd)
 
 	if m.screen != screenSummary {
 		t.Fatalf("screen = %v, want the summary, so the split never finished", m.screen)
@@ -941,7 +994,216 @@ func TestFinishingASplitLeavesNothingOnDisk(t *testing.T) {
 		t.Fatalf("walking %s: %v", home, err)
 	}
 
-	if len(found) != 0 {
-		t.Errorf("finishing a split wrote %d file(s): %v", len(found), found)
+	if len(found) != 1 {
+		t.Fatalf("finishing a split wrote %d file(s), want 1: %v", len(found), found)
+	}
+	if filepath.Base(found[0]) != history.File {
+		t.Errorf("wrote %s, want %s", found[0], history.File)
+	}
+
+	records, err := history.Since(start.AddDate(-1, 0, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("got %d records, want 1", len(records))
+	}
+	if records[0].Rounds <= 0 {
+		t.Errorf("Rounds = %d, want the rounds the split actually finished", records[0].Rounds)
+	}
+}
+
+// What the record says has to be what the summary showed, or the history is a
+// different account of the session from the one the user just watched.
+func TestTheRecordAgreesWithTheSummary(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "")
+
+	m := New(testConfig())
+	m.now = func() time.Time { return start }
+	m.play = func() {}
+
+	m, cmd := walkToSummaryRecording(t, m, start)
+	run(t, cmd)
+
+	records, err := history.Since(start.AddDate(-1, 0, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("got %d records, want 1", len(records))
+	}
+
+	if records[0].Name != m.name {
+		t.Errorf("record name = %q, want the summary's %q", records[0].Name, m.name)
+	}
+	if records[0].Rounds != m.rounds {
+		t.Errorf("record rounds = %d, want the summary's %d", records[0].Rounds, m.rounds)
+	}
+	if records[0].Focused != m.focused {
+		t.Errorf("record focused = %v, want the summary's %v", records[0].Focused, m.focused)
+	}
+}
+
+// Abandoning a split is not completing one. Esc drops back to the picker without
+// reaching the summary, so nothing should be recorded — the time was worked, but
+// the session as configured never happened.
+func TestAbandoningASplitRecordsNothing(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "")
+
+	m := New(testConfig())
+	m.now = func() time.Time { return start }
+	m.play = func() {}
+
+	// Neither keypress has a command worth running: starting only schedules a
+	// tick, and abandoning discards the session's commands entirely.
+	m = at(press(t, m, "enter"), start)
+	m = press(t, m, "esc")
+
+	if m.screen != screenPicker {
+		t.Fatalf("screen = %v, want the picker", m.screen)
+	}
+
+	records, err := history.Since(start.AddDate(-1, 0, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 0 {
+		t.Errorf("got %d records, want 0 — an abandoned split is not a finished one", len(records))
+	}
+}
+
+// The write is best effort: a history that cannot be written must not stop the
+// timer from working. This is the promise that recordCmd makes by discarding the
+// error, and it is worth pinning because the alternative — reporting the failure —
+// would mean interrupting a session that has already run.
+func TestAHistoryThatCannotBeWrittenDoesNotStopTheSplit(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+
+	// A file where the history directory should be: MkdirAll fails, so Append
+	// fails, and none of that may reach the model.
+	if err := os.WriteFile(filepath.Join(home, ".config"), []byte("not a directory"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := New(testConfig())
+	m.now = func() time.Time { return start }
+	m.play = func() {}
+
+	m, cmd := walkToSummaryRecording(t, m, start)
+	run(t, cmd)
+
+	if m.screen != screenSummary {
+		t.Errorf("screen = %v, want the summary: a failed write changed the outcome", m.screen)
+	}
+}
+
+// The running total is the reason to have it on the session screen: it moves as
+// rounds finish, rather than sitting still for the whole split and jumping at
+// the end.
+func TestTheSessionScreenShowsTodaysTotalAsRoundsFinish(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "")
+
+	m := New(testConfig())
+	m.now = func() time.Time { return start }
+	m.play = func() {}
+	m = m.LoadStats()
+
+	m = at(press(t, m, "enter"), start)
+
+	// Two skips land in the second focus round, with the first one finished.
+	m = skip(t, m, start.Add(25*time.Minute))
+	m = skip(t, m, start.Add(30*time.Minute))
+
+	shown := stripANSI(m.render())
+	if !strings.Contains(shown, "today 25m") {
+		t.Errorf("the running total did not accumulate:\n%s", shown)
+	}
+}
+
+// A day with nothing in it should say so rather than showing a zero, which reads
+// as a broken counter rather than an empty day.
+func TestTheSessionScreenSaysNothingUntilSomethingIsRecorded(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "")
+
+	m := New(testConfig())
+	m.now = func() time.Time { return start }
+	m.play = func() {}
+	m = m.LoadStats()
+	m = at(press(t, m, "enter"), start)
+
+	if shown := stripANSI(m.render()); strings.Contains(shown, "today") {
+		t.Errorf("a running total is shown for an empty day:\n%s", shown)
+	}
+}
+
+// Once a split has been recorded, the next session's screen starts from the
+// stored figure rather than from nothing.
+func TestTheSessionScreenCountsEarlierSplitsToday(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "")
+
+	if err := history.Append(history.Record{
+		Name:    "Classic",
+		Focused: 50 * time.Minute,
+		Rounds:  2,
+		EndedAt: start.Add(-time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	m := New(testConfig())
+	m.now = func() time.Time { return start }
+	m.play = func() {}
+	m = m.LoadStats()
+	m = at(press(t, m, "enter"), start)
+
+	shown := stripANSI(m.render())
+	if !strings.Contains(shown, "today 50m") {
+		t.Errorf("the stored figure is missing from the session screen:\n%s", shown)
+	}
+}
+
+// The picker is where every session starts, so today's figure belongs there rather
+// than somewhere the user has to go looking for it.
+func TestThePickerShowsTodaysTotal(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "")
+
+	if err := history.Append(history.Record{
+		Name:    "Classic",
+		Focused: 50 * time.Minute,
+		Rounds:  2,
+		EndedAt: start.Add(-time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	m := New(testConfig())
+	m.now = func() time.Time { return start }
+	m = m.LoadStats()
+
+	shown := stripANSI(m.render())
+	if !strings.Contains(shown, "today 50m") {
+		t.Errorf("the picker does not show today's total:\n%s", shown)
+	}
+}
+
+// Nothing recorded means nothing shown, not a zero.
+func TestThePickerShowsNoTotalForAnEmptyDay(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "")
+
+	m := New(testConfig())
+	m.now = func() time.Time { return start }
+	m = m.LoadStats()
+
+	if shown := stripANSI(m.render()); strings.Contains(shown, "today") {
+		t.Errorf("the picker shows a total for a day with nothing in it:\n%s", shown)
 	}
 }

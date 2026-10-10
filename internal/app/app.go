@@ -12,6 +12,6 @@ import (
 // a plain error on stderr, rather than from inside a full screen interface that
 // has already taken over the terminal.
 func Run(cfg config.Config) error {
-	_, err := tea.NewProgram(New(cfg)).Run()
+	_, err := tea.NewProgram(New(cfg).LoadStats()).Run()
 	return err
 }

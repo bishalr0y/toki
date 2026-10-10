@@ -722,3 +722,55 @@ func TestACountOfOneIsNotPluralised(t *testing.T) {
 		}
 	}
 }
+
+// The wordmark belongs on the running timer as well as the picker: it is the
+// screen a session spends most of its life on, so it is the one most worth
+// identifying.
+func TestTheSessionScreenShowsTheWordmark(t *testing.T) {
+	out := plain(Session{Phase: timer.PhaseFocus, Remaining: "20:00"}.View())
+
+	if !strings.Contains(out, "_\\") || !strings.Contains(out, "|  |") {
+		t.Errorf("the wordmark is missing from the session screen:\n%s", out)
+	}
+}
+
+// The wordmark is seven rows, and the session screen is already the tallest thing
+// toki draws. That cost is a decision, so the resulting height is pinned: a
+// session screen that grew past the space it needs would start refusing to run in
+// an ordinary terminal.
+func TestTheSessionScreenFitsAnOrdinaryTerminal(t *testing.T) {
+	out := plain(Session{Phase: timer.PhaseFocus, Remaining: "20:00", Today: "today 3m  ·  0 rounds"}.View())
+
+	rows := strings.Count(out, "\n") + 1
+	if rows > 24 {
+		t.Errorf("the session screen is %d rows, too tall for a 24 row terminal:\n%s", rows, out)
+	}
+}
+
+// The picker, the session and the summary are the three screens a session passes
+// through, and the wordmark is what makes them visibly the same program. Two of
+// the three carrying it and the third not would read as a screen that forgot.
+func TestEveryScreenCarriesTheWordmark(t *testing.T) {
+	screens := map[string]string{
+		"picker":  plain(Picker{Splits: []Split{{Name: "Classic"}}, Cursor: 0}.View()),
+		"session": plain(Session{Phase: timer.PhaseFocus, Remaining: "20:00"}.View()),
+		"summary": plain(Summary{SplitName: "Classic", Rounds: 2, Focus: "50m"}.View()),
+	}
+
+	for name, out := range screens {
+		if !strings.Contains(out, "_\\") || !strings.Contains(out, "|  |") {
+			t.Errorf("the %s screen has no wordmark:\n%s", name, out)
+		}
+	}
+}
+
+// The summary gained seven rows when the wordmark went on it. That is affordable
+// because the screen is short, but the height is pinned so it cannot creep past
+// what a summary screen needs.
+func TestTheSummaryFitsAnOrdinaryTerminal(t *testing.T) {
+	out := plain(Summary{SplitName: "Classic", Rounds: 2, Focus: "50m"}.View())
+
+	if rows := strings.Count(out, "\n") + 1; rows > 24 {
+		t.Errorf("the summary is %d rows, too tall for a 24 row terminal:\n%s", rows, out)
+	}
+}

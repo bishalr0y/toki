@@ -401,3 +401,58 @@ func TestValidateRejectsUnusableTimers(t *testing.T) {
 		})
 	}
 }
+
+// XDG_CONFIG_HOME is the only thing that can tell a Linux user where a program's
+// files are meant to live, so it has to be honoured when it is set.
+func TestTheConfigDirFollowsXDGConfigHome(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+
+	dir, err := Dir()
+	if err != nil {
+		t.Fatalf("Dir() returned error: %v", err)
+	}
+
+	want := filepath.Join(xdg, "toki")
+	if dir != want {
+		t.Errorf("Dir() = %q, want %q", dir, want)
+	}
+}
+
+// The existing path is where every current install already has its config and
+// sound, so an unset or unusable variable must leave it exactly where it was.
+func TestTheConfigDirDefaultsToTheDotConfigPath(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("XDG_CONFIG_HOME", "")
+
+	dir, err := Dir()
+	if err != nil {
+		t.Fatalf("Dir() returned error: %v", err)
+	}
+
+	want := filepath.Join(tmpHome, ".config/toki")
+	if dir != want {
+		t.Errorf("Dir() = %q, want %q", dir, want)
+	}
+}
+
+// XDG requires an absolute path. A relative value would resolve against the
+// working directory, which for a timer is wherever the shell happened to be, so
+// it is ignored rather than followed.
+func TestARelativeXDGConfigHomeIsIgnored(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("XDG_CONFIG_HOME", "relative/path")
+
+	dir, err := Dir()
+	if err != nil {
+		t.Fatalf("Dir() returned error: %v", err)
+	}
+
+	want := filepath.Join(tmpHome, ".config/toki")
+	if dir != want {
+		t.Errorf("Dir() = %q, want %q", dir, want)
+	}
+}

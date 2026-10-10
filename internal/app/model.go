@@ -14,11 +14,13 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/bishalr0y/toki/internal/config"
+	"github.com/bishalr0y/toki/internal/history"
 	"github.com/bishalr0y/toki/internal/sound"
 	"github.com/bishalr0y/toki/internal/timer"
 	"github.com/bishalr0y/toki/internal/ui"
 )
 
+// screen is which of toki's screens is showing.
 type screen int
 
 const (
@@ -38,11 +40,21 @@ type tickMsg time.Time
 // the sound tied to the update loop rather than firing off on its own.
 type soundPlayedMsg struct{}
 
+// recordedMsg reports that a finished split was written to the history. It carries
+// no outcome for the same reason soundPlayedMsg does not: the write is best effort,
+// and Update does not need to know whether it worked to carry on.
+type recordedMsg struct{}
+
 // Model is the entire application state.
 type Model struct {
 	splits []ui.Split
 	cursor int
 	screen screen
+
+	// today is the day's total, read once at startup and refreshed when a split
+	// finishes. Only the picker and the session screen show it; --stats and
+	// --history are printed from the history package directly.
+	today history.Totals
 
 	timer timer.Timer
 	split timer.Split
@@ -94,6 +106,64 @@ func playCompletionSound() {
 // Init satisfies tea.Model. Nothing needs to happen before the first message.
 func (m Model) Init() tea.Cmd { return nil }
 
+// LoadStats fills in the totals the session and stats screens show.
+//
+// It reads once, at startup, and the numbers it produces then only change when a
+// split finishes. Reading on every tick would cost a file scan several times a
+// second to produce an answer that cannot have moved.
+//
+// A history that cannot be read leaves the totals at zero rather than stopping
+// toki: the screens then show nothing, which is the same as having no history
+// yet, and a timer that will not start over a statistics file is worse than one
+// that shows a zero.
+func (m Model) LoadStats() Model {
+	totals, err := history.Today(m.now())
+	if err == nil {
+		m.today = totals
+	}
+
+	return m
+}
+
+// refreshToday brings today's total up to date, after a split has been recorded.
+//
+// It is called when a split finishes rather than on every tick, because that is
+// the only moment the number can change.
+func (m Model) refreshToday() Model {
+	if totals, err := history.Today(m.now()); err == nil {
+		m.today = totals
+	}
+	return m
+}
+
+// todayRunning is today's total including the split in progress.
+//
+// Including it is what makes the line worth watching. A total that only counted
+// finished splits would sit unchanged for the whole 25 minutes it is on screen,
+// and would then jump; one that moves as rounds complete answers "how am I doing"
+// while the answer is still forming, and lands on exactly the figure `--stats`
+// shows once the split is recorded.
+//
+// The figures come from the timer rather than from the record, so nothing is
+// written twice and the summary cannot disagree with the line above the countdown.
+func (m Model) todayRunning(now time.Time) history.Totals {
+	t := m.today
+
+	// Shown only while working. The round count in the line is the day's, but
+	// during a break there is no round in progress, and a number about rounds
+	// appearing over a rest is the same confusion the session screen already
+	// avoids by leaving its own round label out there.
+	if !m.timer.Started() || m.timer.Phase() != timer.PhaseFocus {
+		return t
+	}
+
+	t.Focused += m.timer.Focused(now)
+	t.Rounds += m.timer.Rounds()
+	t.Splits++
+
+	return t
+}
+
 // Update satisfies tea.Model.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -106,6 +176,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyPressMsg:
 		return m.onKey(msg.String(), m.now())
+
+	case recordedMsg:
+		// Re-read rather than adding the split to the total by hand. The split was
+		// just written, so reading it back is a few hundred lines, and it means the
+		// number on screen is the one the file actually holds rather than a running
+		// total assembled in memory — which is what would drift if a write ever
+		// failed, silently and invisibly.
+		return m.refreshToday(), nil
 	}
 
 	return m, nil
@@ -131,7 +209,9 @@ func (m Model) onTick(now time.Time) (tea.Model, tea.Cmd) {
 	}
 
 	if m.timer.Finished() {
-		m = m.complete(now)
+		var r history.Record
+		m, r = m.complete(now)
+		cmds = append(cmds, recordCmd(r))
 	} else {
 		cmds = append(cmds, m.tickCmd(now))
 	}
@@ -139,18 +219,44 @@ func (m Model) onTick(now time.Time) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
-// complete marks the split finished: it keeps what was achieved and moves to the
-// summary.
+// complete marks the split finished: it keeps what was achieved, moves to the
+// summary, and reports the record to write.
 //
-// The figures stay in the model rather than being written anywhere, so there is
-// nothing here that can fail and no warning to give. The summary reports the
-// session that just ran, not a day of sessions.
-func (m Model) complete(now time.Time) Model {
+// The record is returned rather than written here so that complete stays a pure
+// function of the model, which is what makes it testable without a filesystem. The
+// caller decides what to do with it — and it is told to decide, because writing is
+// the only thing in this function that can fail.
+//
+// An abandoned split still records. Esc during a session goes back to the picker
+// without calling this, so reaching complete means the split ran its course; how
+// many rounds it managed is a fact about the session rather than a reason to
+// discard it.
+func (m Model) complete(now time.Time) (Model, history.Record) {
 	m.focused = m.timer.Focused(now)
 	m.rounds = m.timer.Rounds()
 	m.screen = screenSummary
 
-	return m
+	return m, history.Record{
+		Name:    m.name,
+		Focused: m.focused,
+		Rounds:  m.rounds,
+		EndedAt: now,
+	}
+}
+
+// recordCmd writes a finished split to the history.
+//
+// Best effort, exactly as sound.Play is. A split that ran for an hour has already
+// happened; failing to note it down is not worth interrupting the user over, and
+// there is no failure this could produce that the timer cannot keep running
+// through. The error is dropped rather than logged because there is nowhere to log
+// it — writing to the terminal would corrupt the screen, and toki keeps no log file
+// by design.
+func recordCmd(r history.Record) tea.Cmd {
+	return func() tea.Msg {
+		_ = history.Append(r)
+		return recordedMsg{}
+	}
 }
 
 func (m Model) onKey(k string, now time.Time) (tea.Model, tea.Cmd) {
@@ -161,6 +267,15 @@ func (m Model) onKey(k string, now time.Time) (tea.Model, tea.Cmd) {
 		return m.onSessionKey(k, now)
 	case screenSummary:
 		if k == keyEnter || isQuit(k) {
+			return m.toPicker(), nil
+		}
+
+		// The two stats screens are read-only, so any key that is not quitting or
+		// asking to leave goes back the same way. There is nothing on them to edit.
+		switch {
+		case isQuit(k):
+			return m, tea.Quit
+		case k == keyEnter || k == keyEsc:
 			return m.toPicker(), nil
 		}
 	}
@@ -240,7 +355,9 @@ func (m Model) skipPhase(now time.Time) (tea.Model, tea.Cmd) {
 
 	m.timer.Skip(now)
 	if m.timer.Finished() {
-		return m.complete(now), nil
+		var r history.Record
+		m, r = m.complete(now)
+		return m, recordCmd(r)
 	}
 	return m, m.tickCmd(now)
 }
@@ -306,6 +423,7 @@ func (m Model) render() string {
 			ElapsedFrac: m.timer.Progress(m.now()),
 			BarWidth:    m.barWidth(),
 			Width:       m.width,
+			Today:       ui.TodayLine(m.todayRunning(m.now())),
 		}.View()
 		help = ui.Help(m.width,
 			[2]string{"space", "pause"},
@@ -324,7 +442,12 @@ func (m Model) render() string {
 		help = ui.Help(m.width, [2]string{"enter", "back"}, [2]string{"q", "quit"})
 
 	default:
-		body = ui.Picker{Splits: m.splits, Cursor: m.cursor, Width: m.width}.View()
+		body = ui.Picker{
+			Splits: m.splits,
+			Cursor: m.cursor,
+			Width:  m.width,
+			Today:  ui.TodayLine(m.today),
+		}.View()
 		help = ui.Help(m.width,
 			[2]string{"↑/↓", "move"},
 			[2]string{"enter", "start"},
