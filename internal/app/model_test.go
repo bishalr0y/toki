@@ -543,9 +543,12 @@ func filledCells(m Model) int {
 // soundsPlayed runs the commands an update asked for and counts the completion
 // sounds they played.
 //
-// Ticks sleep until the next whole second and never play anything, so the wait
-// is bounded by a deadline rather than by every command finishing. Sound
-// commands report immediately, so the window is generous for them.
+// Ticks sleep until the next whole second, so the loop normally finishes on its
+// own once they land; the deadline below is a backstop for a command that never
+// returns, not the mechanism for stopping. It used to be 250ms, which made it the
+// mechanism — and that raced: one of these tests drives the real sound path,
+// which shells out to exec.LookPath, so on a loaded machine it could outlast the
+// window and report no sound for a phase that had ended.
 func soundsPlayed(cmd tea.Cmd) int {
 	if cmd == nil {
 		return 0
@@ -560,7 +563,10 @@ func soundsPlayed(cmd tea.Cmd) int {
 	launch(cmd)
 
 	played := 0
-	deadline := time.After(250 * time.Millisecond)
+	// Past the longest tick, so the loop ends when the ticks do. Chosen as a
+	// ceiling rather than tuned to the tests: anything shorter turns a slow
+	// machine into a red build.
+	deadline := time.After(3 * time.Second)
 
 	for outstanding > 0 {
 		select {
